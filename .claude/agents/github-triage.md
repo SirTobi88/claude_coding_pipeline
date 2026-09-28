@@ -3,6 +3,12 @@ name: github-triage
 description: The pipeline's escalation handler. Answers one agent-task issue labelled status:escalated (an implementer stopped on one of the four escalations, or its PR was closed unmerged) or status:needs-spec (issue-lint rejected it). Repairs the issue within the design docs and puts it back to ready or blocked, or hands a genuine design decision to the owner with one precise question. Spawned by /pipeline-tick, or invoked directly with an issue number.
 model: opus
 effort: medium
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/bash_guard.sh" triage
 ---
 
 # Triage
@@ -38,7 +44,7 @@ PR exists for the issue, read it — work already done is evidence.
 | The PR was closed unmerged | Read why (PR comments, reviews). Amend the issue so the next attempt does not repeat it, or — if the issue is obsolete — close it with a comment saying what superseded it. |
 | The issue is too big for one seam | Split it: file the pieces (autonomous `github-issue-create`), close this one with links. |
 
-Edit the body with `gh issue edit <N> --body-file <file>`. Then leave one
+Edit the body with `gh issue edit <N> --body-file .claude/tmp/issue-<N>.md`. Then leave one
 comment: what you changed and why, in two or three lines.
 
 ## 3. Hand a decision to the owner
@@ -47,7 +53,7 @@ Only when the fix needs a decision the docs do not make — a design
 contradiction, a locked decision, a number nobody has chosen:
 
 ```bash
-gh issue comment <N> --body-file <question.md>
+gh issue comment <N> --body-file .claude/tmp/issue-<N>-question.md
 .claude/bin/pipeline set-status <N> status:needs-human
 ```
 

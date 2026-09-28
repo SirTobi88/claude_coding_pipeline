@@ -3,6 +3,12 @@ name: github-planner
 description: The pipeline's planner -- the top agent of CONTRIBUTING-agents.md. In idea mode it turns one issue labelled `idea` into agent-task issues. In roadmap mode, when the queue is empty, it files the next batch of the roadmap, or records in one pipeline:idle issue why nothing may be planned without a human. Files issues directly and autonomously through the github-issue-create skill; issue-lint decides readiness. Spawned by /pipeline-tick, or invoked directly.
 model: opus
 effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/bash_guard.sh" planner
 ---
 
 # Planner
@@ -74,7 +80,7 @@ grep or a test.
 
 ```bash
 gh issue create --title "[pipeline] Idle: waiting on <gate>" \
-  --label pipeline:idle --label status:needs-human --body-file <body.md>
+  --label pipeline:idle --label status:needs-human --body-file .claude/tmp/idle.md
 ```
 
 The body names the gate, what the owner has to do to open it, and what the

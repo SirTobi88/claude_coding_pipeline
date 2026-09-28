@@ -1,24 +1,64 @@
 {
   "permissions": {
+    "deny": [
+      "Bash(git push *--force*)",
+      "Bash(git push *--delete*)",
+      "Bash(git push *--mirror*)",
+      "Bash(git -c *)",
+      "Bash(git *--upload-pack*)",
+      "Bash(git *--receive-pack*)",
+      "Bash(git *--exec*)",
+      "Bash(git *--output*)",
+      "Bash(gh api *-X*)",
+      "Bash(gh api *--method*)",
+      "Bash(gh api * -f *)",
+      "Bash(gh api * -F *)",
+      "Bash(gh api *--field*)",
+      "Bash(gh api *--raw-field*)",
+      "Bash(gh api *--input*)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo edit *)"
+    ],
     "allow": [
-      "Bash(.claude/bin/pipeline:*)",
-      "Bash(.claude/bin/gh-reviewer:*)",
-      "Bash(gh issue:*)",
-      "Bash(gh pr:*)",
-      "Bash(gh api:*)",
-      "Bash(gh run:*)",
-      "Bash(gh label:*)",
-      "Bash(git fetch:*)",
-      "Bash(git pull:*)",
-      "Bash(git checkout:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git push origin agent/:*)",
-      "Bash(git push -u origin agent/:*)",
-      "Bash(git push origin HEAD:agent/:*)",
-      "Bash(git merge origin/main:*)",
-      "Bash(git worktree:*)",
-      "Bash(./run_tests.sh:*)"
+      "Bash(.claude/bin/pipeline run *)",
+      "Bash(.claude/bin/pipeline set-status *)",
+      "Bash(.claude/bin/pipeline release *)",
+      "Bash(.claude/bin/pipeline claim *)",
+      "Bash(.claude/bin/pipeline lint *)",
+      "Bash(.claude/bin/pipeline config *)",
+      "Bash(.claude/bin/gh-reviewer *)",
+      "Bash(gh issue *)",
+      "Bash(gh pr *)",
+      "Bash(gh run *)",
+      "Bash(gh label list *)",
+      "Bash(gh repo view *)",
+      "Bash(gh api repos/*/pulls/*)",
+      "Bash(git fetch *)",
+      "Bash(git pull --ff-only *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git ls-remote *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push origin agent/*)",
+      "Bash(git push -u origin agent/*)",
+      "Bash(git push origin HEAD:agent/*)",
+      "Bash(git merge origin/*)",
+      "Bash(git worktree *)",
+      "Bash(git branch -D review-*)",
+      "Bash(./run_tests.sh *)",
+      "Bash(bash .claude/hooks/test/run_tests.sh)",
+      "Bash(python -m unittest *)",
+      "Bash(python3 -m unittest *)",
+      "Edit(/.claude/worktrees/**)",
+      "Write(/.claude/worktrees/**)",
+      "Edit(/.claude/tmp/**)",
+      "Write(/.claude/tmp/**)"
     ]
   },
   "hooks": {
@@ -31,6 +71,16 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/allowlist_guard.sh\"",
             "timeout": 15,
             "statusMessage": "Checking the issue allowlist"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/bash_guard.sh\"",
+            "timeout": 10
           }
         ]
       }

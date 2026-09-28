@@ -21,6 +21,13 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# These jobs run the pull request's own code, so its token gets nothing it
+# could misuse: read-only, and not left in .git/config for the test run to
+# find. A token that may write or approve would be a second approver that is
+# not the author (docs/Pipeline.md § Merging).
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -28,6 +35,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # EDIT: install and cache your toolchain here -- e.g.
       #   uses: actions/setup-node@v4 / actions/setup-python@v5 / a pinned
@@ -47,6 +56,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Hook tests
         run: bash .claude/hooks/test/run_tests.sh

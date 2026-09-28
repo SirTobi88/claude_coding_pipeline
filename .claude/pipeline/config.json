@@ -5,6 +5,8 @@
   "required_checks": ["ci", "tooling", "allowlist", "contract"],
   "roadmap_docs": ["docs/ROADMAP.md"],
   "reviewer_token_file": "~/.config/claude-pipeline/my-project/reviewer-token",
+  "agent_login": "",
+  "control_paths": [".github/", ".claude/", "run_tests.sh", "CLAUDE.md", "CONTRIBUTING-agents.md", "docs/Pipeline.md"],
   "limits": {
     "max_parallel_implement": 3,
     "max_parallel_review": 2,

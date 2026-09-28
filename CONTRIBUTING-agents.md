@@ -38,7 +38,10 @@ write through the Edit and Write tools before it happens; it does not see a
 write made through the shell, so it catches the accident, not the workaround.
 The `allowlist` job in `.github/workflows/pr-contract.yml` checks the whole diff
 whichever way it was written, and it is a required check. Both read the issue
-through the same parser (`.claude/hooks/lib/issue_scope.sh`). On an
+through the same parser (`.claude/hooks/lib/issue_scope.sh`). An implementer
+never edits its own issue — widening the list is triage's answer to an
+escalation — and `.claude/hooks/bash_guard.sh` refuses an implementer's
+`gh issue edit`. On an
 `agent/<N>-` branch both take the issue from the branch name, never from the PR
 body.
 
@@ -113,7 +116,10 @@ platform (`docs/Pipeline.md` § *Merging*):
   dismissed on every new commit.
 - Every agent pushes as the owner's account, so the only approval that can count
   is the **reviewer bot's** — and only the reviewer agent acts as the bot
-  (`.claude/bin/gh-reviewer`).
+  (`.claude/bin/gh-reviewer`; `.claude/hooks/bash_guard.sh` refuses it to every
+  other agent and to the scheduled tick's own session). `docs/Pipeline.md`
+  § *What binds an agent* says which of these rules the platform enforces and
+  which are guard rails.
 - The reviewer approves the exact commit it reviewed and enables auto-merge.
   Nobody runs a merge by hand, and nobody pushes to the default branch.
 
@@ -155,21 +161,32 @@ not exist.
 | Rule | Enforced by | When |
 |---|---|---|
 | Files in scope is an allowlist | `.claude/hooks/allowlist_guard.sh` | before an Edit or Write |
-| Files in scope is an allowlist; one issue per PR | `allowlist` job, `pr-contract.yml` (required) | every push and description edit |
+| Files in scope is an allowlist; one issue per PR; every PR from the agents' account is bound to an issue that is open and in flight | `allowlist` job, `pr-contract.yml` (required) | every push and description edit |
+| A pipeline control path changes only under a `human-decision` issue, and never through an unbound pull request | `allowlist` job; the tick dispatches no agent onto such an issue or its PR. The label itself is guarded only by `bash_guard.sh` while the agents' token may label issues | every push; every tick |
+| Agents neither review nor fix a fork's PR or one bound to no issue | the tick (`decide()` lists them under *Needs you*) | every tick |
 | The PR description has its four sections | `contract` job, `pr-contract.yml` (required) | every push and description edit |
 | An issue is ready only when its template is filled | `issue-lint.yml` → `status:ready` / `blocked` / `needs-spec` | every issue edit, and when a blocker closes |
 | Nobody approves their own work; nothing merges red | branch protection (`pipeline setup-repo`) | every merge |
+| Only the reviewer acts as the bot; an implementer does not edit issues; no agent applies `human-decision`; nobody force-pushes or edits branch protection from a session | `.claude/hooks/bash_guard.sh` — a guard rail, not a boundary | before a Bash command |
+| Agents cannot change protection or push workflow files | the agents' token (`docs/Pipeline.md` § Setup) | always |
 | The checks above do what this section says | `.claude/hooks/test/`, `.claude/pipeline/tests/` | `tooling` job |
 
-Three things about the allowlist checks are worth stating plainly:
+Four things about the allowlist checks are worth stating plainly:
 
 - **The edit-time guard fails open; CI does not.** A guard that bricks a session
   when the network blinks gets switched off, so when it cannot read the issue it
   lets the write through, and CI is the backstop. Without `gh` and `jq` on the
-  machine the guard is effectively off — check them.
-- **CI judges a PR with the base branch's parser**, not the PR's own copy, so a
-  PR cannot loosen the rule that judges it. Deleting the job gains nothing
-  either: the check is required by name and pinned to GitHub Actions.
+  machine the guard is effectively off — the tick's `setup_problems` say so.
+- **CI judges a PR with the default branch's code, not the PR's.** `allowlist`
+  and `contract` run on `pull_request_target`: the workflow file, the parser
+  and the rules all come from the default branch, and nothing from the pull
+  request is executed. A PR cannot loosen the rule that judges it.
+- **A required check is only as trusted as the workflow that produces it.**
+  Branch protection matches a check by name and app, so a PR that added a
+  workflow with a job named `allowlist` could produce one. The agents' token
+  has no Workflows permission, so an agent cannot push any workflow file. A
+  fork is not bound by that token: its workflow runs wait for the owner's
+  approval (`setup-repo`), and the tick never hands its PR to an agent.
 - **On an `agent/<N>-` branch the issue is read off the branch name**, never off
   the PR body, which the author writes.
 

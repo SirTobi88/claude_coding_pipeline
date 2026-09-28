@@ -1,6 +1,7 @@
 ---
 description: One cycle of the coding pipeline -- survey GitHub, claim work, spawn the planner, implementers, reviewers and triage it calls for, report
 model: sonnet
+effort: low
 ---
 
 Run one pipeline tick. `docs/Pipeline.md` is the contract;

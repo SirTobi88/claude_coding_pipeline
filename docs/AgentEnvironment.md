@@ -17,8 +17,8 @@ shell, or a binary name.**
 
 | Tool | Why | Check |
 |---|---|---|
-| `gh`, authenticated as the owner | every issue, PR and label operation | `gh auth status` |
-| `jq` | the allowlist guard reads its hook payload with it | `jq --version` |
+| `gh`, authenticated with the agents' token (`docs/Pipeline.md` § Setup, step 2) | every issue, PR and label operation | `gh auth status` names a `github_pat_…` token |
+| `jq` | both hooks read their payload with it | `jq --version` |
 | Python ≥ 3.9 | `.claude/bin/pipeline` | `.claude/bin/pipeline --help` |
 | bash | the hooks, the shims, the test entry point | on Windows, Git for Windows' Git Bash |
 | the reviewer token | `.claude/bin/gh-reviewer` | `.claude/bin/gh-reviewer api user --jq .login` |
@@ -36,8 +36,13 @@ Quit) and reopen it. Closing the window keeps the app running with its old
 ```powershell
 winget install --id GitHub.cli
 winget install --id jqlang.jq
-gh auth login
+# as the pipeline's OS user, with the agents' token (docs/Pipeline.md § Setup, step 2):
+gh auth login --with-token < agents-token.txt
+gh auth setup-git
 ```
+
+Your own `gh auth login` belongs in your own account's terminal, for
+`setup-repo`, and never on the pipeline's OS user.
 
 - `python3` is often the Microsoft Store alias, which prints an install prompt
   instead of running. `.claude/bin/pipeline` tests each candidate and uses the
@@ -52,7 +57,35 @@ gh auth login
 
 ### macOS and Linux
 
-`brew install gh jq` (or the distribution's packages), then `gh auth login`.
+`brew install gh jq` (or the distribution's packages), then, as the pipeline's
+OS user, `gh auth login --with-token < agents-token.txt` and
+`gh auth setup-git`.
+
+---
+
+## Permissions
+
+The scheduled tick runs in `dontAsk` mode (`docs/Pipeline.md` § Setup, step
+5): a tool call that `.claude/settings.json` does not allow is refused, not
+asked about. What that allows, and why:
+
+- **Commands** — the ones the agent prompts use, and no more; `deny` rules
+  refuse force pushes, git options that run commands or write files, and
+  writes through `gh api`. `.claude/pipeline/tests/test_settings.py` checks a
+  hand-kept list of the prompts' commands against the rules: when a prompt
+  starts using a new command, add it to that list and to the rules together.
+  Rules match text, so they limit the usual commands; they are not a boundary
+  (`docs/Pipeline.md` § *What binds an agent*).
+- **Edits** — inside `.claude/worktrees/` (every implementer and reviewer works
+  in one) and `.claude/tmp/`, nowhere else.
+- **Scratch files** — PR bodies, issue bodies and review reports go to
+  `.claude/tmp/` (gitignored), named after their issue or PR
+  (`.claude/tmp/pr-12.md`) so two agents never share one.
+
+`.claude/settings.local.json` is machine-local and in no pull request, yet it
+can widen those permissions or turn the hooks off for every tick. The tick
+reports it when it exists; keep the pipeline's machine free of one, or know
+exactly what it holds.
 
 ---
 

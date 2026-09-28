@@ -103,11 +103,12 @@ time, so do not serialise issues over a collision a worktree already solves.
 ## 5. File it
 
 ```bash
-gh issue create --title "[area] <summary>" --body-file <tmpfile> --label agent-task
+gh issue create --title "[area] <summary>" --body-file .claude/tmp/new-issue-<slug>.md --label agent-task
 ```
 
-Only add labels or milestones that already exist (`gh label list`). Delete the
-temp file afterwards.
+Only add labels or milestones that already exist (`gh label list`).
+`.claude/tmp/` is gitignored scratch space; the autonomous permissions allow
+writing there and nowhere else in the main checkout.
 
 ## 6. After filing
 

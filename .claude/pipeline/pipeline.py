@@ -47,6 +47,15 @@ DEFAULT_CONFIG = {
     "required_checks": ["ci", "tooling", "allowlist", "contract"],
     "roadmap_docs": ["docs/ROADMAP.md"],
     "reviewer_token_file": "~/.config/claude-pipeline/my-project/reviewer-token",
+    # The account the agents push and open pull requests as. Empty means the
+    # repository owner, which is who the agents run as today.
+    "agent_login": "",
+    # Files that decide what the agents may do. An issue whose Files in scope
+    # touches one is the owner's work, never dispatched (docs/Pipeline.md
+    # § What stays with the owner), and the `allowlist` check refuses a change
+    # to one unless its issue carries `human-decision`.
+    "control_paths": [".github/", ".claude/", "run_tests.sh", "CLAUDE.md",
+                      "CONTRIBUTING-agents.md", "docs/Pipeline.md"],
     "limits": {
         "max_parallel_implement": 3,
         "max_parallel_review": 2,
@@ -134,6 +143,7 @@ STALE_WORKING = timedelta(hours=float(_L["stale_working_hours"]))
 REQUIRED_CHECKS = tuple(CONFIG["required_checks"])
 DEFAULT_BRANCH = CONFIG["default_branch"]
 GITHUB_ACTIONS_APP_ID = 15368
+CONTROL_PATHS = tuple(CONFIG["control_paths"])
 
 TEMPLATE_SECTIONS = (
     "Goal", "Why", "Context", "Interface", "Files in scope",
@@ -261,7 +271,9 @@ def _is_dir_entry(entry: str) -> bool:
 
 def paths_overlap(a: str, b: str) -> bool:
     """Could two allowlist entries name the same file? Conservative on globs."""
-    a, b = a.strip().lstrip("./"), b.strip().lstrip("./")
+    # Drop a leading `./` or `/` only. `lstrip("./")` stripped every leading
+    # dot, so `.github/` and `github/` read as the same directory.
+    a, b = (re.sub(r"^(\./)+", "", s.strip()).lstrip("/") for s in (a, b))
     if a == b:
         return True
     for x, y in ((a, b), (b, a)):
@@ -276,6 +288,11 @@ def paths_overlap(a: str, b: str) -> bool:
 
 def scopes_overlap(xs: list[str], ys: list[str]) -> bool:
     return any(paths_overlap(x, y) for x in xs for y in ys)
+
+
+def control_paths_touched(scope: list[str], control=CONTROL_PATHS) -> list[str]:
+    """The control paths an allowlist could write to."""
+    return sorted({c for c in control for s in scope if paths_overlap(c, s)})
 
 
 # --- lint ------------------------------------------------------------------------
@@ -422,10 +439,16 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
 
     # ---- pull requests ----
     open_pr_by_issue: dict[int, dict] = {}
+    open_issue_by_number = {i["number"]: i for i in issues}
     reviews_planned = 0
     for pr in sorted(prs, key=lambda p: p["number"]):
         n = pr["number"]
         tag = f"PR #{n}"
+        if pr.get("crossRepo"):
+            # A fork's branch is nobody's claim, whatever it is called; its
+            # code is an outsider's. Agents neither review nor fix it.
+            plan.awaiting_human.append(f"{tag}: from a fork -- review it yourself")
+            continue
         issue_n = branch_issue(pr.get("headRefName", "")) or next(iter(pr.get("closingIssues") or []), None)
         if issue_n:
             open_pr_by_issue[issue_n] = pr
@@ -436,6 +459,21 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if NEEDS_HUMAN in labels:
             plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
             continue
+        if not issue_n:
+            # No issue, no allowlist, no contract to review against.
+            plan.awaiting_human.append(f"{tag}: bound to no issue -- review it yourself "
+                                       "(github-pr-review skill)")
+            continue
+        owner_issue = open_issue_by_number.get(issue_n)
+        if owner_issue is not None:
+            held = labels_of(owner_issue) & {HUMAN_DECISION, ASSET}
+            scope = _safe_scope(allowlist_fn, owner_issue.get("body", ""))
+            if held or (scope != ["*"] and control_paths_touched(scope)):
+                # The owner's work: an agent pass on it could edit the files
+                # only the owner may (docs/Pipeline.md § What stays with the owner).
+                plan.awaiting_human.append(f"{tag}: works owner-held issue #{issue_n} -- "
+                                           "review and fix it yourself")
+                continue
         if WORKING in labels:
             if not stale(pr, STALE_WORKING):
                 plan.in_flight.append(f"{tag}: an agent holds it")
@@ -593,7 +631,20 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                 if desired in active_statuses and status not in active_statuses:
                     active += 1
             if desired == READY:
-                candidates.append((issue, _safe_scope(allowlist_fn, issue.get("body", ""))))
+                scope = _safe_scope(allowlist_fn, issue.get("body", ""))
+                touched = control_paths_touched(scope) if scope != ["*"] else []
+                if scope == ["*"]:
+                    # Unreadable scope: it could name anything, a control path
+                    # included, and no overlap check can clear it.
+                    plan.deferred.append(f"{tag}: Files in scope could not be parsed")
+                elif touched:
+                    # An agent that may edit the pipeline's own rules can
+                    # loosen them; that change is the owner's to make.
+                    plan.awaiting_human.append(
+                        f"{tag}: Files in scope touches pipeline control paths "
+                        f"({', '.join(touched)}) -- the owner works it, labelled {HUMAN_DECISION}")
+                else:
+                    candidates.append((issue, scope))
             elif desired == BLOCKED:
                 plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
 
@@ -696,7 +747,8 @@ class Gh:
     def open_prs(self) -> list[dict]:
         raw = self.json(["pr", "list", "--state", "open", "--limit", "100", "--json",
                          "number,title,headRefName,headRefOid,isDraft,labels,mergeable,"
-                         "updatedAt,statusCheckRollup,autoMergeRequest,closingIssuesReferences"]) or []
+                         "updatedAt,statusCheckRollup,autoMergeRequest,closingIssuesReferences,"
+                         "isCrossRepository"]) or []
         prs = []
         for p in raw:
             # One page of 100: `--paginate` would print one JSON array per page,
@@ -707,6 +759,7 @@ class Gh:
                 "number": p["number"], "title": p.get("title", ""),
                 "headRefName": p.get("headRefName", ""), "headRefOid": p.get("headRefOid", ""),
                 "isDraft": p.get("isDraft", False), "labels": p.get("labels", []),
+                "crossRepo": bool(p.get("isCrossRepository")),
                 "mergeable": p.get("mergeable"), "updatedAt": p.get("updatedAt"),
                 "checks": rollup_state(p.get("statusCheckRollup") or []),
                 "autoMerge": p.get("autoMergeRequest") is not None,
@@ -803,6 +856,43 @@ def remote_agent_branches() -> set[str]:
     return out
 
 
+def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
+              bash=bash_path) -> list[str]:
+    """What is wrong with the machine and checkout the tick runs from.
+
+    Warnings for the report, never a block: each is something no pull request
+    shows, because it lives outside the repository's history -- and every tick
+    and every agent runs with it.
+    """
+    problems = []
+    if (root / ".claude" / "settings.local.json").exists():
+        problems.append(".claude/settings.local.json exists: it can widen permissions or turn off "
+                        "hooks for every tick and agent -- check it holds only what you meant "
+                        "(docs/AgentEnvironment.md § Permissions)")
+    if not which("jq"):
+        problems.append("jq not on PATH: the allowlist guard and the bash guard cannot read "
+                        "their input (docs/AgentEnvironment.md)")
+    if not bash():
+        problems.append("bash not found: the hooks and the allowlist parser cannot run")
+
+    def git(*args: str) -> str | None:
+        proc = run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
+        return proc.stdout if proc.returncode == 0 else None
+
+    # Untracked files count too: a new agent, skill or hook file changes what
+    # runs as surely as an edit does.
+    dirty = [line[3:] for line in (git("status", "--porcelain", "--untracked-files=normal") or "").splitlines()]
+    if dirty:
+        problems.append(f"the tick's checkout has uncommitted changes to {', '.join(dirty[:5])}"
+                        f"{' ...' if len(dirty) > 5 else ''}: the tick and every agent run this "
+                        "code, and no pull request shows it")
+    branch = (git("rev-parse", "--abbrev-ref", "HEAD") or "").strip()
+    if branch and branch != DEFAULT_BRANCH:
+        problems.append(f"the tick's checkout is on {branch}, not {DEFAULT_BRANCH}: the tick runs "
+                        "that branch's pipeline, and implementer worktrees start from it")
+    return problems
+
+
 def make_lint_fn(gh: Gh, open_numbers: set[int]):
     cache: dict[int, str | None] = {}
 
@@ -885,6 +975,7 @@ def cmd_run(args) -> int:
     lint_fn = make_lint_fn(gh, open_numbers)
     plan = decide(snap, parse_allowlist, lint_fn)
     out = plan.to_json()
+    out["setup_problems"] = out["setup_problems"] + preflight()
     if args.apply and not plan.paused:
         made = gh.ensure_labels()
         if made:
@@ -992,11 +1083,11 @@ def cmd_check_pr_body(args) -> int:
     return 0
 
 
-def protection_payload() -> dict:
+def protection_payload(app_id: int = GITHUB_ACTIONS_APP_ID) -> dict:
     return {
         "required_status_checks": {
             "strict": False,
-            "checks": [{"context": c, "app_id": GITHUB_ACTIONS_APP_ID} for c in REQUIRED_CHECKS],
+            "checks": [{"context": c, "app_id": app_id} for c in REQUIRED_CHECKS],
         },
         # Agents run as the owner's account, which is an admin. Without this,
         # every rule below is advisory for exactly the actor it exists to bind.
@@ -1017,6 +1108,41 @@ def protection_payload() -> dict:
     }
 
 
+def _enabled(value) -> bool | None:
+    """Protection fields come back as `{"enabled": x}` but are PUT as plain `x`."""
+    return value.get("enabled") if isinstance(value, dict) else value
+
+
+def protection_drift(actual: dict | None, wanted: dict) -> list[str]:
+    """Where the branch protection GitHub reports differs from what setup-repo sets."""
+    if not actual:
+        return ["no branch protection"]
+    drift = []
+    for key in ("enforce_admins", "required_linear_history", "allow_force_pushes", "allow_deletions"):
+        if _enabled(actual.get(key)) != wanted[key]:
+            drift.append(f"{key} is {_enabled(actual.get(key))}, want {wanted[key]}")
+    reviews_have = actual.get("required_pull_request_reviews") or {}
+    for key, want in wanted["required_pull_request_reviews"].items():
+        if reviews_have.get(key, False if isinstance(want, bool) else None) != want:
+            drift.append(f"required_pull_request_reviews.{key} is {reviews_have.get(key)}, want {want}")
+    checks_have = {(c.get("context"), c.get("app_id"))
+                   for c in (actual.get("required_status_checks") or {}).get("checks") or []}
+    checks_want = {(c["context"], c["app_id"]) for c in wanted["required_status_checks"]["checks"]}
+    for context, app in sorted(checks_want - checks_have, key=str):
+        drift.append(f"required check {context} (app {app}) missing")
+    for context, app in sorted(checks_have - checks_want, key=str):
+        drift.append(f"required check {context} (app {app}) not in required_checks")
+    return drift
+
+
+def actions_app_id(gh: Gh) -> int:
+    """GitHub Actions' app id. 15368 on github.com; it differs on GHES and GHE.com."""
+    try:
+        return int((gh.json(["api", "apps/github-actions"]) or {}).get("id") or GITHUB_ACTIONS_APP_ID)
+    except (GhError, TypeError, ValueError):
+        return GITHUB_ACTIONS_APP_ID
+
+
 def cmd_setup_repo(args) -> int:
     gh = Gh(dry_run=args.dry_run)
     report = []
@@ -1030,11 +1156,41 @@ def cmd_setup_repo(args) -> int:
     gh._run(settings, mutating=True)
     report.append("repo: auto-merge on, delete branch on merge on, squash only")
 
+    # A workflow token that may approve pull requests is a second approver
+    # that is not the author: code a PR runs in CI could approve that PR.
+    try:
+        gh._run(["api", "-X", "PUT", "repos/{owner}/{repo}/actions/permissions/workflow",
+                 "-f", "default_workflow_permissions=read",
+                 "-F", "can_approve_pull_request_reviews=false"], mutating=True)
+        report.append("actions: workflow token read-only, may not approve pull requests")
+    except GhError as e:
+        report.append(f"actions: could NOT restrict the workflow token ({e}) -- an organisation "
+                      "policy may set it; make sure it is read-only and cannot approve")
+    # A fork's pull request runs its own ci.yml; the agents' token limits what
+    # agents push, not what outsiders do. Hold every outsider's run for approval.
+    try:
+        gh._run(["api", "-X", "PUT", "repos/{owner}/{repo}/actions/permissions/fork-pr-contributor-approval",
+                 "-f", "approval_policy=all_external_contributors"], mutating=True)
+        report.append("actions: workflow runs from outside contributors' forks wait for approval")
+    except GhError as e:
+        report.append(f"actions: could not require approval for fork workflow runs ({e}) -- "
+                      "private repositories do not run fork workflows unless you allow it")
+
+    app_id = actions_app_id(gh)
+    payload = protection_payload(app_id)
     gh._run(["api", "-X", "PUT", f"repos/{{owner}}/{{repo}}/branches/{DEFAULT_BRANCH}/protection",
-             "--input", "-"], input=json.dumps(protection_payload()), mutating=True)
+             "--input", "-"], input=json.dumps(payload), mutating=True)
     report.append(f"{DEFAULT_BRANCH} protected: checks {', '.join(REQUIRED_CHECKS)} "
-                  "(GitHub Actions only), 1 approval, stale approvals dismissed, admins included, "
-                  "linear history")
+                  f"(GitHub Actions, app {app_id}), 1 approval, stale approvals dismissed, "
+                  "admins included, linear history")
+    if not args.dry_run:
+        try:
+            actual = gh.json(["api", f"repos/{{owner}}/{{repo}}/branches/{DEFAULT_BRANCH}/protection"])
+        except GhError as e:
+            actual = None
+            report.append(f"protection: could not read it back ({e})")
+        for d in protection_drift(actual, payload):
+            report.append(f"protection DRIFT: {d}")
 
     login = gh.reviewer_login()
     if not login:
@@ -1054,11 +1210,19 @@ def cmd_setup_repo(args) -> int:
                      "-f", "permission=push"], mutating=True)
             report.append(f"reviewer bot: invited {login} with write access")
             if not args.dry_run:
+                this_repo = (gh.json(["repo", "view", "--json", "nameWithOwner"]) or {}).get("nameWithOwner", "")
                 invites = gh.json(["api", "user/repository_invitations"], as_reviewer=True) or []
                 for inv in invites:
+                    # Only this repository's: accepting every pending invitation
+                    # would hand a token on this machine to repositories nobody
+                    # meant it for.
+                    name = (inv.get("repository") or {}).get("full_name", "")
+                    if name.lower() != this_repo.lower():
+                        report.append(f"reviewer bot: left invitation {inv['id']} to {name} alone")
+                        continue
                     gh._run(["api", "-X", "PATCH", f"user/repository_invitations/{inv['id']}"],
                             as_reviewer=True, mutating=True)
-                    report.append(f"reviewer bot: accepted invitation {inv['id']}")
+                    report.append(f"reviewer bot: accepted invitation {inv['id']} to {name}")
     for line in report + gh.log:
         print(line)
     return 0
