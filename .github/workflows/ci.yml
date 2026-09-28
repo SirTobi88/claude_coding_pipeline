@@ -1,0 +1,55 @@
+name: CI
+
+# Two required checks live here (see `required_checks` in
+# .claude/pipeline/config.json):
+#
+#   ci       -- the project's build and test. EDIT the toolchain step for your
+#               stack; keep the job name, because branch protection requires it
+#               by name.
+#   tooling  -- the pipeline's own tests (allowlist guard, decision logic).
+#
+# Default pull_request types only (opened, synchronize, reopened). Checks that
+# read the PR *description* live in pr-contract.yml, which also runs on
+# `edited` -- keeping them apart means editing a description never re-runs, or
+# worse skips, the test job for a commit it already judged.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # EDIT: install and cache your toolchain here -- e.g.
+      #   uses: actions/setup-node@v4 / actions/setup-python@v5 / a pinned
+      #   engine binary fetched and cached by version.
+      # Pin versions. A CI that takes "latest" produces results nobody can
+      # attribute when a local run and CI disagree.
+
+      # The single test entry point. The pipeline's agents run the same
+      # command locally (`test_command` in .claude/pipeline/config.json), so
+      # CI and the agents judge the same thing.
+      - name: test
+        run: ./run_tests.sh
+
+  tooling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Hook tests
+        run: bash .claude/hooks/test/run_tests.sh
+
+      - name: Pipeline tests
+        run: python3 -m unittest discover -s .claude/pipeline/tests -v

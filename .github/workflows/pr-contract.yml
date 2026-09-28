@@ -1,0 +1,174 @@
+name: PR contract
+
+# Everything here reads the PR description or the issue it closes, so it
+# re-runs on `edited` as well: fixing a description re-judges it without a
+# new commit. The build/test job lives in ci.yml and does not re-run on edits.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: pr-contract-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The allowlist is the most-cited rule in CONTRIBUTING-agents.md. It is
+  # checked against the same .claude/hooks/lib/issue_scope.sh the edit-time
+  # guard uses, because two implementations of "what does Files in scope
+  # mean" drift silently and the drift only shows up as a correct PR being
+  # rejected.
+  allowlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.head_ref }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Files in scope
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Judge the PR with the BASE branch's parser, not its own, so a PR
+          # cannot loosen the rule that judges it. The PR's copy is used only
+          # when the base has none yet (the PR that introduces it).
+          lib="$(mktemp)"
+          if git show "origin/$BASE_REF:.claude/hooks/lib/issue_scope.sh" > "$lib" 2>/dev/null; then
+            echo "Parser: origin/$BASE_REF"
+          else
+            cp .claude/hooks/lib/issue_scope.sh "$lib"
+            echo "Parser: this PR's own copy (none on origin/$BASE_REF yet)"
+          fi
+          . "$lib"
+
+          # Fetch and match in two steps: under `set -euo pipefail` a grep that
+          # matches nothing would kill the script instead of taking the "no
+          # allowlist applies" path below.
+          body="$(gh pr view "$PR" --json body --jq '.body // ""')" || {
+            echo "::error::Could not read PR #$PR."
+            exit 1
+          }
+          # GitHub's closing keywords, as whole words -- "prefixes #12" must
+          # not read as "fixes #12" -- with its optional colon.
+          closes="$(printf '%s' "$body" \
+                   | grep -oiE '(^|[^[:alnum:]_])(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)):?[[:space:]]+#[0-9]+' \
+                   | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
+          branch_issue="$(scope_issue_from_branch "$BRANCH")"
+
+          # On an `agent/<N>-<slug>` branch the issue is N, read off the branch
+          # -- never off the PR body, which the author writes. The body must
+          # still close N, and must not claim to close anything else.
+          if [ -n "$branch_issue" ]; then
+            if ! printf '%s\n' "$closes" | grep -qx "$branch_issue"; then
+              echo "::error::Branch '$BRANCH' is issue #$branch_issue, but the PR body does not say 'Closes #$branch_issue'."
+              exit 1
+            fi
+            others="$(printf '%s\n' "$closes" | grep -vx "$branch_issue" || true)"
+            if [ -n "$others" ]; then
+              echo "::error::Branch '$BRANCH' is issue #$branch_issue, but the PR body also closes: $(echo $others)."
+              echo "One issue per PR -- and a second issue would be a second allowlist this job does not check."
+              exit 1
+            fi
+            issue="$branch_issue"
+          else
+            # Anything else -- a chore branch, a docs branch -- is bound by the
+            # issue it names, if it names exactly one, and by nothing otherwise.
+            issue="$(printf '%s\n' "$closes" | grep -v '^$' | head -1 || true)"
+            if [ "$(printf '%s\n' "$closes" | grep -c .)" -gt 1 ]; then
+              echo "::error::The PR body closes more than one issue: $(echo $closes). One issue per PR."
+              exit 1
+            fi
+            if [ -z "$issue" ]; then
+              echo "No issue reference and not an agent/<N>- branch -- no allowlist applies."
+              exit 0
+            fi
+          fi
+
+          echo "Checking against issue #$issue"
+          list="$(mktemp)"
+          rc=0; scope_fetch_allowlist "$issue" > "$list" || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::Could not read issue #$issue from GitHub (network or auth). Re-run the job."
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::Issue #$issue has no parseable 'Files in scope' section."
+            exit 1
+          fi
+          echo "Allowed:"; sed 's/^/  - /' "$list"
+
+          # Every path a file had counts, not only where it ended up: a rename
+          # lists only its NEW path in `--name-only`, so moving an out-of-scope
+          # file into an allowed directory would slip through. The files API
+          # carries `previous_filename`.
+          changed="$(mktemp)"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > "$changed"; then
+            echo "::error::Could not read the diff for PR #$PR."
+            exit 1
+          fi
+          if [ ! -s "$changed" ]; then
+            echo "::error::PR #$PR reports no changed files -- refusing to pass on an empty diff."
+            exit 1
+          fi
+
+          violations=0
+          echo "Changed:"
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if scope_path_allowed "$f" "$list"; then
+              echo "  ok  $f"
+            else
+              echo "  ->  $f   OUTSIDE THE ALLOWLIST"
+              violations=$((violations + 1))
+            fi
+          done < "$changed"
+
+          if [ "$violations" -gt 0 ]; then
+            echo "::error::$violations file(s) outside issue #$issue's Files in scope."
+            echo "Revert the out-of-scope change, or escalate on the issue if the work"
+            echo "genuinely needs the file (CONTRIBUTING-agents.md § 'When you are blocked')."
+            echo "Widening an issue's allowlist does not re-trigger this job; editing the PR"
+            echo "description or pushing does."
+            exit 1
+          fi
+          echo "All changed files are inside the allowlist."
+
+  # The PR description's shape: the four sections of
+  # .github/pull_request_template.md, each non-empty. Checked here so the
+  # reviewer spends its time on the code rather than on bookkeeping.
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: PR description
+        run: |
+          set -euo pipefail
+          # Same rule as the allowlist job: judged by the base branch's copy.
+          checker="$(mktemp -d)/pipeline.py"
+          git show "origin/$BASE_REF:.claude/pipeline/pipeline.py" > "$checker" 2>/dev/null \
+            || cp .claude/pipeline/pipeline.py "$checker"
+          gh pr view "$PR" --json body --jq '.body // ""' > body.md
+          python3 "$checker" check-pr-body < body.md

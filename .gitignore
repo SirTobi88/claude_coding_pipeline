@@ -1,0 +1,9 @@
+# Per-agent git worktrees (docs/AgentEnvironment.md § Worktrees).
+.claude/worktrees/
+
+# Machine-local Claude Code settings and permissions.
+.claude/settings.local.json
+
+# Python bytecode from the pipeline's tests.
+__pycache__/
+*.pyc

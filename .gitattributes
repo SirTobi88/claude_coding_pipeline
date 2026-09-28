@@ -1,0 +1,11 @@
+# Scripts run under bash on Linux CI and under Git Bash on Windows. A CRLF
+# checkout breaks both (`$'\r': command not found`), and a Windows machine with
+# core.autocrlf=true would produce exactly that, so pin them to LF regardless.
+*.sh            text eol=lf
+*.py            text eol=lf
+.claude/bin/*   text eol=lf
+
+# Add your toolchain's generated files here if they are committed and the tool
+# writes LF everywhere (e.g. Godot's `*.import`). Otherwise every test run on
+# Windows leaves them "modified" with no content change and trips every
+# clean-tree precondition.

@@ -1,0 +1,15 @@
+{
+  "project": "my-project",
+  "default_branch": "main",
+  "test_command": "./run_tests.sh",
+  "required_checks": ["ci", "tooling", "allowlist", "contract"],
+  "roadmap_docs": ["docs/ROADMAP.md"],
+  "reviewer_token_file": "~/.config/claude-pipeline/my-project/reviewer-token",
+  "limits": {
+    "max_parallel_implement": 3,
+    "max_parallel_review": 2,
+    "max_fix_rounds": 2,
+    "stale_in_progress_hours": 6,
+    "stale_working_hours": 4
+  }
+}

@@ -1,0 +1,43 @@
+name: issue-lint
+
+# Readiness is decided by a machine, not by whoever reads the issue next.
+# An agent-task issue that passes gets `status:ready` (or `status:blocked` if
+# its Blocked by names an open issue); one that fails gets `status:needs-spec`
+# and a comment naming what is missing. docs/Pipeline.md.
+#
+# Label changes made with GITHUB_TOKEN do not trigger workflows, so this can
+# never loop on its own output.
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  lint:
+    # `labeled` only matters when the label is agent-task: that is an issue
+    # entering the pipeline. Every other label change is the pipeline's own.
+    if: github.event.action != 'labeled' || github.event.label.name == 'agent-task'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lint-${{ github.event.action == 'closed' && 'relint' || github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint this issue
+        if: github.event.action != 'closed'
+        run: python3 .claude/pipeline/pipeline.py lint "$ISSUE" --apply
+
+      # A closed issue may have been the last thing another issue was waiting on.
+      - name: Re-lint issues that may have been waiting on it
+        if: github.event.action == 'closed'
+        run: python3 .claude/pipeline/pipeline.py relint --apply

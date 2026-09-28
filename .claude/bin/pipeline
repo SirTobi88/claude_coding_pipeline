@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runs .claude/pipeline/pipeline.py with whichever Python 3 actually works.
+#
+# `python3` is not a safe first guess: on Windows it is often the Microsoft
+# Store alias, which exists on PATH and prints an install prompt instead of
+# running anything. So each candidate has to prove it is Python 3 first.
+set -u
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for py in python3 python py; do
+    if command -v "$py" >/dev/null 2>&1 \
+       && "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+        exec "$py" "$here/../pipeline/pipeline.py" "$@"
+    fi
+done
+echo "pipeline: no working Python >= 3.9 on PATH (see docs/AgentEnvironment.md)" >&2
+exit 127

@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.claude/bin/pipeline:*)",
+      "Bash(.claude/bin/gh-reviewer:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh api:*)",
+      "Bash(gh run:*)",
+      "Bash(gh label:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push origin agent/:*)",
+      "Bash(git push -u origin agent/:*)",
+      "Bash(git push origin HEAD:agent/:*)",
+      "Bash(git merge origin/main:*)",
+      "Bash(git worktree:*)",
+      "Bash(./run_tests.sh:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/allowlist_guard.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking the issue allowlist"
+          }
+        ]
+      }
+    ]
+  }
+}
