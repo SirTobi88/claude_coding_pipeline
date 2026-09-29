@@ -50,7 +50,7 @@ default_branch`), then `git show origin/<default>:<path>`.
 | Case | What you do |
 |---|---|
 | Lint: a section is missing or placeholder | Write it from the design docs and the code as it is on the default branch. Quote real signatures (`git show origin/<default>:<path>`); anchor on symbol names, not line numbers. |
-| Needs a file outside the allowlist, **same seam** | Add it to **Files in scope** — but first check no open issue in progress or in review lists it (`gh issue list --label agent-task --state open --limit 300 --json number,body,labels`). If one does, add `Blocked by: #M` instead. Two branches on one file is the collision the allowlist exists to stop. If the issue has an open PR whose `allowlist` check is red, re-run that check once the body is saved: `gh run rerun <run-id> --failed` (the run id is in `gh pr checks <P>`). |
+| Needs a file outside the allowlist, **same seam** | Add it to **Files in scope** — but first check no open issue in progress or in review lists it (`gh issue list --label agent-task --state open --limit 300 --json number,body,labels`). If one does, add `Blocked by: #M` instead. Two branches on one file is the collision the allowlist exists to stop. If the issue has an open PR whose `allowlist` check is red, re-run that check once the body is saved: `gh run rerun <run-id> --failed` (the run id is in `.claude/bin/pipeline checks <P>`). |
 | Needs a file outside the allowlist, **a different seam** | File the missing seam as its own issue with the `github-issue-create` skill in autonomous mode, and add it to this issue's **Blocked by**. |
 | The quoted interface does not match `main` | Re-quote it from `main`. If the difference changes what the issue asks for, rewrite the affected Goal or Definition of done lines too. |
 | A done-condition has no harness | File the harness as its own issue (autonomous `github-issue-create`), block this one on it. |
@@ -64,7 +64,7 @@ the PR too, with a comment naming what replaced it
 (`gh pr close <P> --comment "…"`; the branch stays, so the work is not lost).
 An open PR whose issue is closed only waits on the owner.
 
-Edit the body with `gh issue edit <N> --body-file .claude/tmp/issue-<N>.md`. Then leave one
+Edit the body with `gh issue edit <N> --body-file .pipeline-tmp/issue-<N>.md`. Then leave one
 comment: what you changed and why, in two or three lines.
 
 ## 3. Hand a decision to the owner
@@ -73,7 +73,7 @@ Only when the fix needs a decision the docs do not make — a design
 contradiction, a locked decision, a number nobody has chosen:
 
 ```bash
-gh issue comment <N> --body-file .claude/tmp/issue-<N>-question.md
+gh issue comment <N> --body-file .pipeline-tmp/issue-<N>-question.md
 .claude/bin/pipeline set-status <N> status:needs-human
 ```
 

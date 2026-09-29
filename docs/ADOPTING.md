@@ -50,7 +50,7 @@ keep CRLF endings, which Git Bash runs but Linux CI does not
 rewrites the working copies — and discards uncommitted edits, so only on a
 clean tree.)
 
-Add `.claude/worktrees/`, `.claude/tmp/` and `.claude/settings.local.json` to
+Add `.claude/worktrees/`, `.pipeline-tmp/` and `.claude/settings.local.json` to
 `.gitignore`.
 
 ---

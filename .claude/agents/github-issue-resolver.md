@@ -105,7 +105,7 @@ Stage **explicit paths**, never `git add -A`. Conventional commit message
 
 ```bash
 git push -u origin agent/<N>-<slug>
-gh pr create --title "<conventional summary>" --body-file .claude/tmp/pr-<N>.md
+gh pr create --title "<conventional summary>" --body-file .pipeline-tmp/pr-<N>.md
 .claude/bin/pipeline set-status <N> status:in-review
 ```
 
@@ -132,9 +132,10 @@ guard on. The issue is the number in `agent/<N>-…`; its **Files in scope**
 still binds you, exactly as it bound the original author.
 
 - **`ci-failed`** — the tick already re-ran it once, so it failed twice. Find
-  what failed: `gh pr checks <P>`, then `gh run view <run-id> --log-failed`.
+  what failed: `.claude/bin/pipeline checks <P>` (not `gh pr checks`, which the
+  agents' token cannot read), then `gh run view <run-id> --log-failed`.
   By job: `ci`, `tooling` — fix the cause, not the test. `contract` — fix the
-  description with `gh pr edit <P> --body-file .claude/tmp/pr-<N>.md`.
+  description with `gh pr edit <P> --body-file .pipeline-tmp/pr-<N>.md`.
   `allowlist` — revert the out-of-scope change; if the file genuinely belongs to
   the work, escalate.
 - **`review`** — the reviewer bot's latest *changes requested* review and its

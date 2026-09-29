@@ -29,6 +29,7 @@
       "Bash(.claude/bin/pipeline claim *)",
       "Bash(.claude/bin/pipeline lint *)",
       "Bash(.claude/bin/pipeline config *)",
+      "Bash(.claude/bin/pipeline checks *)",
       "Bash(.claude/bin/pipeline doctor)",
       "Bash(.claude/bin/pipeline stats *)",
       "Bash(.claude/bin/gh-reviewer *)",
@@ -62,8 +63,8 @@
       "Bash(python3 -m unittest *)",
       "Edit(/.claude/worktrees/**)",
       "Write(/.claude/worktrees/**)",
-      "Edit(/.claude/tmp/**)",
-      "Write(/.claude/tmp/**)"
+      "Edit(/.pipeline-tmp/**)",
+      "Write(/.pipeline-tmp/**)"
     ]
   },
   "hooks": {

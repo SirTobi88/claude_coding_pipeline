@@ -46,7 +46,7 @@ or a doc and the code, disagree — do not file the work. File the question:
 
 ```bash
 gh issue create --title "[question] <the decision, in a few words>" \
-  --body-file .claude/tmp/question-<slug>.md --label agent-task --label status:needs-human
+  --body-file .pipeline-tmp/question-<slug>.md --label agent-task --label status:needs-human
 ```
 
 The body: what has to be decided and why it came up (link the issue or PR),
@@ -124,12 +124,13 @@ time, so do not serialise issues over a collision a worktree already solves.
 ## 5. File it
 
 ```bash
-gh issue create --title "[area] <summary>" --body-file .claude/tmp/new-issue-<slug>.md --label agent-task
+gh issue create --title "[area] <summary>" --body-file .pipeline-tmp/new-issue-<slug>.md --label agent-task
 ```
 
 Only add labels or milestones that already exist (`gh label list`).
-`.claude/tmp/` is gitignored scratch space; the autonomous permissions allow
-writing there and nowhere else in the main checkout.
+`.pipeline-tmp/` is gitignored scratch space; the autonomous permissions allow
+writing there and nowhere else in the main checkout (not under `.claude/`,
+which `dontAsk` refuses: `docs/AgentEnvironment.md` § Permissions).
 
 ## 6. After filing
 

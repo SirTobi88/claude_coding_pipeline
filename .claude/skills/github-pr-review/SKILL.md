@@ -82,8 +82,12 @@ run it, and `cd` back to the repository root before anything else.
 ## 2. CI at the head commit
 
 ```bash
-gh pr checks <N>
+.claude/bin/pipeline checks <N>
 ```
+
+It lists the required checks at the head with their run ids; exit 0 is
+green, 1 red, 8 still running. Not `gh pr checks`: the agents' token has no
+Checks permission and cannot read it (`docs/Pipeline.md` § Setup, step 2).
 
 The pipeline only dispatches a review when every check at the head is green, so
 normally this is a confirmation. It is also the **reproduction** of the suite:
@@ -168,14 +172,16 @@ git -C .claude/worktrees/review-<N> status --short          # nothing else modif
 git -C .claude/worktrees/review-<N> commit -m "fix(<area>): <what>"
 git -C .claude/worktrees/review-<N> push origin HEAD:<headRefName>
 git -C .claude/worktrees/review-<N> rev-parse HEAD           # the new <sha>
-gh pr checks <N> --watch --interval 30
+.claude/bin/pipeline checks <N> --sha <sha> --wait       # Bash timeout 600000
 ```
 
 Stage the files you edited by name, never `-a`: running the DoD may have
 regenerated tracked files, and committing those can put the PR outside its
 allowlist. Restore anything else `status` lists (`git -C … restore <file>`).
 Your verdict in § 9 is about the new `<sha>`, once its checks are green. Say in
-the verdict what you changed.
+the verdict what you changed. `--wait` gives up after nine minutes with exit 8
+(still running): run it again. Exit 1 means your fix broke a check: release
+(§ 10) and stop, the next tick routes it to a fix pass.
 
 **Small doc and comment fixes go here too, not into a follow-up issue.** Filing
 a new issue for a stale comment in the diff in front of you costs a whole
@@ -208,7 +214,7 @@ APPROVE.
 
 ## 9. The verdict — one review, as the bot, pinned to the commit
 
-Write the report to `.claude/tmp/review-<N>.md` (gitignored scratch space). First line `**Verdict: <VERDICT>**`, then: what
+Write the report to `.pipeline-tmp/review-<N>.md` (gitignored scratch space). First line `**Verdict: <VERDICT>**`, then: what
 you checked (§ 2–7, one line each), each finding with its route, what you fixed,
 follow-up issues filed.
 
@@ -228,7 +234,7 @@ the literal 40-character value, not a variable:
 
 ```bash
 .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/<N>/reviews" \
-  -f commit_id=<sha> -f event=<EVENT> -F body=@.claude/tmp/review-<N>.md
+  -f commit_id=<sha> -f event=<EVENT> -F body=@.pipeline-tmp/review-<N>.md
 ```
 
 | Verdict | `event` | Then |

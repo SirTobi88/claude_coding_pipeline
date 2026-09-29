@@ -298,7 +298,10 @@ class RollupTests(unittest.TestCase):
 
     def test_failed_runs_carry_their_run_id(self):
         out = p.rollup_checks([run_("ci", "FAILURE", run_id=77), run_("allowlist")], self.REQ)
-        self.assertEqual((out["state"], out["failed"]), ("failure", [{"name": "ci", "run": 77}]))
+        self.assertEqual((out["state"], out["failed"]), ("failure", [{"name": "ci", "run": 77, "attempt": None}]))
+        rerun = dict(run_("ci", "FAILURE", run_id=77), runAttempt=2)
+        self.assertEqual(p.rollup_checks([rerun, run_("allowlist")], self.REQ)["failed"],
+                         [{"name": "ci", "run": 77, "attempt": 2}])
 
     def test_the_answer_status_carries_its_baseline(self):
         rollup = [run_("ci"), run_("allowlist"),

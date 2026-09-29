@@ -198,6 +198,21 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["labels"][0], "warn")
         self.assertEqual(report["required checks"][0], "ok")
         self.assertEqual(report["test command allowed"][0], "ok")
+        self.assertEqual(report["CI readable"][0], "ok")
+
+    def test_a_token_that_cannot_read_ci_fails_the_report(self):
+        gh = FakeGh(responses=[
+            (lambda a: a[:2] == ["api", "repos/{owner}/{repo}/commits/" + p.DEFAULT_BRANCH], "abc\n"),
+            (lambda a: any("actions/runs" in x for x in a),
+             p.GhError("gh api repos/{owner}/{repo}/actions/runs...: Resource not accessible (HTTP 403)"))])
+        gh.reviewer_login = lambda: None
+
+        def fake_run(args, **_):
+            return SimpleNamespace(returncode=0, stdout="github_pat_x\n", stderr="")
+        report = {name: (level, detail) for level, name, detail in
+                  p.doctor_report(gh, p.REPO_ROOT, which=lambda t: "/usr/bin/" + t, run=fake_run)}
+        self.assertEqual(report["CI readable"][0], "fail")
+        self.assertIn("Actions", report["CI readable"][1])
 
 
 class ProtectionStateTests(unittest.TestCase):
