@@ -129,6 +129,18 @@ scheduler all read *Files in scope* through `issue_scope.sh`. Two parsers that
 disagree do not announce it; they surface as a correct PR rejected for a file it
 was allowed to touch.
 
+**One grammar, written down and tested.** Found auditing this template: the
+bash parser read a commented-out example, a `## ` line inside a code fence and
+a nested note as entries, while Python's lint stripped comments and matched
+headings in any case. The grammar is now in `issue_scope.sh`'s header, and a
+test holds the scheduler's overlap check to it.
+
+**Compare paths the way git spells them.** Also found auditing the template:
+on a case-insensitive filesystem the guard compared the typed path with git's
+root as text, so `e:\repo\SRC\x` read as outside `E:/repo` — and a guard
+allows what is outside the repository. It now asks git for the path
+(`rev-parse --show-prefix`), which answers in the repository's own spelling.
+
 **Only the leading token of a list item is a path.** Issues routinely name other
 files in prose ("that file belongs to #12"). Sweeping every backticked token
 allowlisted exactly the files an issue said were someone else's.

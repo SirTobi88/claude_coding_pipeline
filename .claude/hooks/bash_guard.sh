@@ -94,8 +94,16 @@ if [ -z "$role" ]; then
 fi
 
 uses_bot=0
+# The wrapper where it is called -- at the start of a command, after a
+# separator, inside $( ), or behind an interpreter -- not wherever it is
+# named: a grep of the docs for it is not a use. The token is different: any
+# command that names it or its file reads it.
+if printf '%s' "$norm" \
+     | grep -qE '(^|[;&|(`]|\$\() *((bash|sh|exec|env|command|xargs|nohup|time)( +-[^ ]+)*( +[A-Za-z_]+=[^ ]*)* +)*([^ ;&|()`]*/)?gh-reviewer( |$)'; then
+    uses_bot=1
+fi
 case "$cmd" in
-    *gh-reviewer*|*PIPELINE_REVIEWER_TOKEN*|*reviewer-token*) uses_bot=1 ;;
+    *PIPELINE_REVIEWER_TOKEN*|*reviewer-token*) uses_bot=1 ;;
 esac
 if [ -n "$token_name" ]; then
     case "$cmd" in *"$token_name"*) uses_bot=1 ;; esac

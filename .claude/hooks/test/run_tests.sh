@@ -142,9 +142,46 @@ m="$(_scope_mtime "$HOOKS/allowlist_guard.sh")"
 case "$m" in ''|*[!0-9]*) bad "mtime is numeric" "got: $m" ;; *) ok ;; esac
 expect_eq "mtime of a missing file is 0" 0 "$(_scope_mtime "$WORK/nope")"
 
+# The grammar (issue_scope.sh, scope_parse_allowlist). One body, every shape an
+# issue has been written in; only the entries marked ENTRY may come out.
+parse() { printf '%s\n' "$1" | scope_parse_allowlist | tr '\n' ' ' | sed 's/ $//'; }
+expect_eq "parser: grammar" "assets/ui files/icon.png docs/**/*.md src/after_sub.py src/bold.py src/c.py src/plain.gd" "$(parse '## Files In Scope (allowlist)
+
+<!-- an example, not an entry:
+- [ ] `src/example.gd`
+-->
+- [ ] `src/c.py` (modify) -- not `src/prose_named.py`, that is #12s
+  - `src/nested_note.py` belongs to #12
++ `assets/ui files/icon.png` (create)
+1. `docs/**/*.md` (modify)
+2) **src/bold.py** (modify)
+* src/plain.gd, (modify)
+
+```python
+## not a heading
+- `src/in_fence.py`
+```
+
+### A sub-heading is content
+- `src/after_sub.py`
+
+## Non-goals
+
+## Files in scope
+
+- `src/second_section.py`')"
+expect_eq "parser: CRLF body" "src/a.py src/b.py" "$(printf '## Files in scope\r\n\r\n- `src/a.py`\r\n- src/b.py\r\n' | scope_parse_allowlist | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "parser: a list nested one level everywhere" "src/a.py src/b.py" "$(parse '## Files in scope
+
+  - `src/a.py`
+  - `src/b.py`')"
+
 a="$(_scope_cache_path 12 https://github.com/o/one.git)"
 b="$(_scope_cache_path 12 https://github.com/o/two.git)"
 [ "$a" != "$b" ] && ok || bad "cache is keyed by repository" "$a = $b"
+a="$(_scope_cache_path 12 https://github.com/o/tool-x.git)"
+b="$(_scope_cache_path 12 https://github.com/o/tool_x.git)"
+[ "$a" != "$b" ] && ok || bad "cache key survives punctuation" "$a = $b"
 
 LIST="$WORK/list"
 scope_fetch_allowlist 228 > "$LIST"
@@ -165,6 +202,15 @@ expect_eq "Context section not allowed"   no  "$(allowed Design/Systems/Simulati
 expect_eq "sibling prefix not allowed"    no  "$(allowed src/sim/town_market.gd.bak)"
 expect_eq ".import companion"             yes "$(allowed src/sim/town_market.gd.import)"
 expect_eq ".import of an unlisted file"   no  "$(allowed src/assets/ui/icon.png.import)"
+covers() { _scope_entry_covers "$1" "$2" && echo yes || echo no; }
+expect_eq "** matches no directory too"   yes "$(covers 'docs/**/*.md' docs/x.md)"
+expect_eq "** matches several"            yes "$(covers 'docs/**/*.md' docs/a/b/x.md)"
+expect_eq "leading **/ matches the root"  yes "$(covers '**/x.gd' x.gd)"
+expect_eq "two ** collapse together"      yes "$(covers 'a/**/b/**/*.md' a/b/x.md)"
+expect_eq "** stays inside its prefix"    no  "$(covers 'docs/**/*.md' other/x.md)"
+expect_eq "[ab] is a glob"                yes "$(covers 'src/[ab].py' src/a.py)"
+expect_eq "[ab] matches nothing else"     no  "$(covers 'src/[ab].py' src/c.py)"
+expect_eq "a path with a space"           yes "$(covers 'assets/ui files/icon.png' 'assets/ui files/icon.png')"
 
 # --- allowlist_guard.sh ------------------------------------------------------
 
@@ -190,7 +236,7 @@ fi
 
 guard() {  # <cwd> <file_path> -> exit code
     jq -n --arg c "$1" --arg f "$2" '{cwd: $c, tool_input: {file_path: $f}}' \
-        | bash "$HOOKS/allowlist_guard.sh" >/dev/null 2>&1
+        | "$BASH" "$HOOKS/allowlist_guard.sh" >/dev/null 2>&1
     echo $?
 }
 expect_eq "guard: in scope"                         0 "$(guard "$REPO" "$REPO/src/sim/town_market.gd")"
@@ -225,6 +271,51 @@ git -C "$OTHER" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git -C "$OTHER" checkout -q -b main-ish
 expect_eq "guard: cwd unbound, file in agent worktree" 2 "$(guard "$OTHER" "$REPO/CLAUDE.md")"
 expect_eq "guard: cwd in agent worktree, file elsewhere" 0 "$(guard "$REPO" "$OTHER/CLAUDE.md")"
+# NotebookEdit names its file `notebook_path`.
+nb="$(jq -n --arg c "$REPO" --arg f "$REPO/CLAUDE.ipynb" '{cwd: $c, tool_input: {notebook_path: $f}}' \
+      | "$BASH" "$HOOKS/allowlist_guard.sh" >/dev/null 2>&1; echo $?)"
+expect_eq "guard: NotebookEdit out of scope"            2 "$nb"
+
+# Letter case differs from git's (Windows, macOS): the path is still judged,
+# not taken for "outside the repository" and allowed.
+if [ -e "$(printf '%s' "$REPO_REAL" | tr '[:lower:]' '[:upper:]')" ]; then
+    UP="$(printf '%s' "$REPO_REAL" | tr '[:lower:]' '[:upper:]')"
+    expect_eq "guard: other case, out of scope"          2 "$(guard "$UP" "$UP/CLAUDE.md")"
+    # The directories are spelled differently; the new file's own name is
+    # what gets created, so it must match the allowlist as typed.
+    expect_eq "guard: other case dirs, in scope"         0 "$(guard "$UP" "$UP/SRC/SIM/town_market.gd")"
+    expect_eq "guard: a new file named in other case"    2 "$(guard "$UP" "$UP/SRC/SIM/TOWN_MARKET.GD")"
+fi
+
+# Issue read, but no parseable path: nothing may be written (CI would refuse
+# all of it). Before, the guard failed open here.
+printf '## Files in scope\n\nsee the design doc\n' > "$FX/issue-301.body.md"
+git -C "$REPO_REAL" checkout -q -b agent/301-empty
+expect_eq "guard: issue with no parseable path"       2 "$(guard "$REPO" "$REPO/src/sim/town_market.gd")"
+git -C "$REPO_REAL" checkout -q agent/228-probe
+
+# Widened since the cache was filled: the guard reads again before refusing.
+guard "$REPO" "$REPO/src/sim/town_market.gd" >/dev/null     # fills the cache
+cp "$FX/issue-228.body.md" "$WORK/issue-228.orig"
+printf '\n## Files in scope\n\n- [ ] `docs/widened.md`\n' > "$WORK/extra"
+awk 'NR==FNR{extra=extra $0 "\n"; next} /^## Files in scope/{print; getline; print; printf "%s", substr(extra, index(extra, "- ")); next} 1' \
+    "$WORK/extra" "$WORK/issue-228.orig" > "$FX/issue-228.body.md"
+expect_eq "guard: a just-widened allowlist counts"     0 "$(guard "$REPO" "$REPO/docs/widened.md")"
+cp "$WORK/issue-228.orig" "$FX/issue-228.body.md"
+rm -f "$TMPDIR"/pipeline-scope-*
+
+# From one worktree into another of the same repository -- the main checkout
+# included -- is refused, whatever the target branch is.
+WT="$REPO_REAL/.claude/worktrees/agent-228-wt"
+git -C "$REPO_REAL" worktree add -q -b agent/228-wt "$WT" 2>/dev/null
+expect_eq "guard: worktree writes into its own tree"   0 "$(guard "$WT" "$WT/src/sim/town_market.gd")"
+expect_eq "guard: worktree writes into the main tree"  2 "$(guard "$WT" "$REPO_REAL/src/sim/town_market.gd")"
+git -C "$REPO_REAL" checkout -q -b main-ish-2
+expect_eq "guard: ...even an unbound main tree"        2 "$(guard "$WT" "$REPO_REAL/CLAUDE.md")"
+expect_eq "guard: the main tree may write anywhere"    0 "$(guard "$REPO_REAL" "$REPO_REAL/CLAUDE.md")"
+git -C "$REPO_REAL" checkout -q agent/228-probe
+git -C "$REPO_REAL" worktree remove --force "$WT" 2>/dev/null
+
 rm -f "$TMPDIR"/pipeline-scope-*
 : > "$GH_LOG"
 guard "$OTHER" "$REPO/CLAUDE.md" >/dev/null
@@ -239,7 +330,7 @@ expect_eq "guard: issue is read from the file's checkout" "$(canon "$REPO_REAL")
 bguard() {  # <command> <agent_type, or "" for the main session> [role] -> exit code
     jq -n --arg c "$1" --arg a "$2" \
         'if $a == "" then {tool_input: {command: $c}} else {tool_input: {command: $c}, agent_type: $a} end' \
-        | bash "$HOOKS/bash_guard.sh" ${3:-} >/dev/null 2>&1
+        | "$BASH" "$HOOKS/bash_guard.sh" ${3:-} >/dev/null 2>&1
     echo $?
 }
 R=".claude/bin/gh-reviewer pr review 5 --approve"
@@ -294,6 +385,11 @@ expect_eq "bash guard: triage applies human-decision"           2 "$(bguard "gh 
 expect_eq "bash guard: planner files a human-decision issue"    2 "$(bguard "gh issue create --title q --label human-decision" github-planner planner)"
 expect_eq "bash guard: planner lists human-decision issues"     0 "$(bguard "gh issue list --label human-decision --state open" github-planner planner)"
 expect_eq "bash guard: the owner applies human-decision"        0 "$(bguard "gh issue edit 5 --add-label human-decision" "")"
+expect_eq "bash guard: the bot through bash"                    2 "$(bguard "bash .claude/bin/gh-reviewer pr review 5 --approve" github-issue-resolver implementer)"
+expect_eq "bash guard: the bot after &&"                        2 "$(bguard "cd x && .claude/bin/gh-reviewer api user" github-issue-resolver)"
+expect_eq "bash guard: the bot inside \$( )"                    2 "$(bguard 'echo "$(.claude/bin/gh-reviewer api user)"' github-triage triage)"
+expect_eq "bash guard: the bot through env"                     2 "$(bguard "env FOO=1 .claude/bin/gh-reviewer pr merge 5" github-issue-resolver)"
+expect_eq "bash guard: naming the wrapper is not using it"      0 "$(bguard "grep -n gh-reviewer docs/Pipeline.md" github-issue-resolver implementer)"
 expect_eq "bash guard: git -C force push"                       2 "$(bguard "git -C .claude/worktrees/review-5 push --force origin HEAD:agent/5-x" github-pr-reviewer)"
 expect_eq "bash guard: git -C push onto main"                   2 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:main" github-pr-reviewer)"
 expect_eq "bash guard: reviewer pushes from its worktree"       0 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:agent/5-x" github-pr-reviewer)"
