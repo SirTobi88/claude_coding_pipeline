@@ -319,9 +319,14 @@ an hour for its review.
   learned to count.
 - **`pipeline doctor`** — every part of the setup, one line each: tools, the
   login the tick uses, the bot's token and access, repository settings, branch
-  protection, the Actions token, labels, that each required check exists as a
-  workflow job, the allow rule for the test command, the checkout, worktrees,
-  and config typos. Exit 1 while anything fails.
+  protection, whether that login can read CI, the Actions token, labels, that
+  each required check exists as a workflow job, the allow rule for the test
+  command, the checkout, worktrees, and config typos. Exit 1 while anything
+  fails.
+- **`pipeline checks <PR> [--wait]`** — the required checks at a pull
+  request's head, with their run ids, read the way the tick reads them. Exit 0
+  green, 1 red, 8 still running, like `gh pr checks`, which the agents' token
+  cannot read (§ Setup, step 2).
 
 ---
 
@@ -341,11 +346,17 @@ other rule here would be advice.
 
 - Signed in as the owner, create a **fine-grained** personal access token.
   Repository access: **only this repository**. Permissions: Contents,
-  Issues, Pull requests, Actions (to re-run a failed check) and Commit
-  statuses (to count review attempts) read and write; Checks read;
+  Issues, Pull requests, Actions (to read CI and re-run a failed check) and
+  Commit statuses (to count review attempts) read and write;
   Administration **read-only**, so each tick can check branch protection is
   still on. **No Administration write, no Workflows.** Set an expiry, and a
   reminder to renew it.
+- A fine-grained token has **no Checks permission**, so on a private
+  repository it cannot read check runs, `gh pr checks`, or a pull request's
+  `statusCheckRollup`. The pipeline reads CI through the Actions API instead
+  (every required check is an Actions job), and agents ask
+  `.claude/bin/pipeline checks <PR>` rather than `gh pr checks`. `doctor`'s
+  *CI readable* line fails if the token cannot.
 - Make it the only credential the tick and its agents see: a separate OS user
   for the pipeline, logged in with `gh auth login --with-token < token-file`
   and `gh auth setup-git` (so `git push` uses it too), with no other GitHub

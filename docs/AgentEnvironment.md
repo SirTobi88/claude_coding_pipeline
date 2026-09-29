@@ -79,10 +79,13 @@ asked about. What that allows, and why:
   Rules match text, so they limit the usual commands; they are not a boundary
   (`docs/Pipeline.md` § *What binds an agent*).
 - **Edits** — inside `.claude/worktrees/` (every implementer and reviewer works
-  in one) and `.claude/tmp/`, nowhere else.
+  in one) and `.pipeline-tmp/`, nowhere else.
 - **Scratch files** — PR bodies, issue bodies and review reports go to
-  `.claude/tmp/` (gitignored), named after their issue or PR
-  (`.claude/tmp/pr-12.md`) so two agents never share one.
+  `.pipeline-tmp/` (gitignored), named after their issue or PR
+  (`.pipeline-tmp/pr-12.md`) so two agents never share one. Not under
+  `.claude/`: Claude Code protects that directory, and in `dontAsk` mode it
+  refuses every write there except `.claude/worktrees/`, whatever the allow
+  rules say.
 
 `.claude/settings.local.json` is machine-local and in no pull request, yet it
 can widen those permissions or turn the hooks off for every tick. The tick

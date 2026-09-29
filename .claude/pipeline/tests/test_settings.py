@@ -59,13 +59,14 @@ USED = [
     '.claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/105/reviews" -f commit_id=abc -f event=APPROVE',
     ".claude/bin/gh-reviewer pr merge 105 --auto --squash --delete-branch --match-head-commit abc",
     "gh issue view 12 --json number,title,body,url,state,labels",
-    "gh issue comment 12 --body-file .claude/tmp/issue-12-question.md",
-    "gh issue edit 12 --body-file .claude/tmp/issue-12.md",
-    "gh issue create --title x --body-file .claude/tmp/new-issue-x.md --label agent-task",
+    "gh issue comment 12 --body-file .pipeline-tmp/issue-12-question.md",
+    "gh issue edit 12 --body-file .pipeline-tmp/issue-12.md",
+    "gh issue create --title x --body-file .pipeline-tmp/new-issue-x.md --label agent-task",
     "gh issue list --state open --json number,title,labels",
-    "gh pr create --title x --body-file .claude/tmp/pr-12.md",
+    "gh pr create --title x --body-file .pipeline-tmp/pr-12.md",
     "gh pr view 105 --json number,headRefName,body,url,labels,mergeable",
-    "gh pr checks 105",
+    ".claude/bin/pipeline checks 105",
+    ".claude/bin/pipeline checks 105 --sha abc --wait",
     "gh run view 123 --log-failed",
     "gh api repos/{owner}/{repo}/pulls/105/reviews",
     "gh api repos/{owner}/{repo}/pulls/105/comments",
@@ -75,7 +76,7 @@ USED = [
     "git fetch origin main",
     "git ls-remote --heads origin 'agent/12-*'",
     "gh pr ready 105",
-    "gh pr edit 105 --body-file .claude/tmp/pr-12.md",
+    "gh pr edit 105 --body-file .pipeline-tmp/pr-12.md",
     ".claude/bin/pipeline release pr 105 --round-label fix-round-1",
     "gh issue close 901 --comment 'planner not available'",
     "git checkout -B agent/12-add-login origin/agent/12-add-login",
@@ -162,7 +163,16 @@ class AllowRuleTests(unittest.TestCase):
     def test_edits_are_allowed_in_worktrees_and_scratch_only(self):
         edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith(("Edit(", "Write("))}
         for rule in edit_rules:
-            self.assertRegex(rule, r"^(Edit|Write)\(/\.claude/(worktrees|tmp)/\*\*\)$")
+            self.assertRegex(rule, r"^(Edit|Write)\(/(\.claude/worktrees|\.pipeline-tmp)/\*\*\)$")
+
+    def test_scratch_is_outside_the_protected_claude_directory(self):
+        # dontAsk refuses every write under .claude/ except .claude/worktrees/,
+        # whatever the allow rules say: the planner's scratch file under
+        # .claude/tmp/ was refused in the first live run.
+        edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith(("Edit(", "Write("))}
+        for rule in edit_rules:
+            self.assertTrue(not rule.startswith(("Edit(/.claude/", "Write(/.claude/"))
+                            or "/.claude/worktrees/" in rule, rule)
 
 
 class HookRegistrationTests(unittest.TestCase):

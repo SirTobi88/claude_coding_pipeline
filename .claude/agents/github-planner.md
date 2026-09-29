@@ -99,7 +99,7 @@ Never file "make the doc match the code".
 
 ```bash
 gh issue create --title "[pipeline] Idle: waiting on <gate>" \
-  --label pipeline:idle --label status:needs-human --body-file .claude/tmp/idle.md
+  --label pipeline:idle --label status:needs-human --body-file .pipeline-tmp/idle.md
 ```
 
 The body names the gate, what the owner has to do to open it, and what the

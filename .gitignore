@@ -3,7 +3,7 @@
 
 # Scratch files agents write: PR and issue bodies, review reports
 # (docs/AgentEnvironment.md § Permissions).
-.claude/tmp/
+.pipeline-tmp/
 
 # Machine-local Claude Code settings and permissions.
 .claude/settings.local.json

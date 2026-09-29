@@ -247,26 +247,55 @@ class AutoMergeTests(unittest.TestCase):
             gh.enable_automerge(105, "abc")
 
 
+def actions_responses(sha="abc", runs=None, jobs=None, statuses=None):
+    """FakeGh answers for Gh.ci_rollup at one commit; jobs is {run_id: [job, ...]}."""
+    runs = runs if runs is not None else [{"id": 42, "name": "CI", "run_attempt": 2}]
+
+    def jobs_of(args):
+        url = next(x for x in args if "/jobs?" in x)
+        return json.dumps([{"jobs": (jobs or {}).get(int(url.split("/runs/")[1].split("/")[0]), [])}])
+    return [
+        (lambda a: any(f"actions/runs?head_sha={sha}&" in x for x in a),
+         json.dumps([{"total_count": len(runs), "workflow_runs": runs}])),
+        (lambda a: any("/jobs?filter=latest" in x for x in a), jobs_of),
+        (lambda a: any(f"commits/{sha}/statuses" in x for x in a), json.dumps([statuses or []])),
+    ]
+
+
+def job(name, conclusion="success", status="completed", run_id=42, attempt=None,
+        at="2026-09-27T10:00:00Z"):
+    return {"name": name, "status": status, "conclusion": conclusion, "started_at": at,
+            "completed_at": at, "run_attempt": attempt,
+            "html_url": f"https://github.com/o/r/actions/runs/{run_id}/job/{run_id}0"}
+
+
+class CallableFakeGh(FakeGh):
+    """A FakeGh whose canned answer may be a function of the arguments."""
+    def _run(self, args, input=None, as_reviewer=False, check=True, mutating=False):
+        for match, out in self.responses:
+            if match(args):
+                if isinstance(out, Exception):
+                    raise out
+                return out(args) if callable(out) else out
+        return super()._run(args, input, as_reviewer, check, mutating)
+
+
 class OpenPrsTests(unittest.TestCase):
     def test_gh_json_becomes_the_snapshot(self):
         listing = [{
             "number": 105, "title": "t", "headRefName": "agent/5-x", "headRefOid": "abc",
             "isDraft": False, "labels": [{"name": "fix-round-1"}], "mergeable": "MERGEABLE",
             "updatedAt": "2026-09-27T11:00:00Z", "autoMergeRequest": None,
-            "isCrossRepository": False, "closingIssuesReferences": [{"number": 5}],
-            "statusCheckRollup": [
-                {"__typename": "CheckRun", "name": "ci", "workflowName": "CI", "status": "COMPLETED",
-                 "conclusion": "FAILURE", "startedAt": "2026-09-27T10:00:00Z",
-                 "detailsUrl": "https://github.com/o/r/actions/runs/42/job/1"},
-                {"__typename": "StatusContext", "context": p.REVIEW_STATUS, "state": "SUCCESS",
-                 "description": "attempt 1", "createdAt": "2026-09-27T10:30:00Z"}]}]
+            "isCrossRepository": False, "closingIssuesReferences": [{"number": 5}]}]
         pages = [[{"user": {"login": "bot"}, "state": "COMMENTED", "commit_id": "abc",
                    "submitted_at": "2026-09-27T10:40:00Z"}],
                  [{"user": None, "state": "APPROVED", "commit_id": "old", "submitted_at": "x"}]]
-        gh = FakeGh(responses=[
+        gh = CallableFakeGh(responses=[
             (lambda a: a[:2] == ["pr", "list"], json.dumps(listing)),
-            (lambda a: "--slurp" in a, json.dumps(pages)),
-            (lambda a: a[:2] == ["run", "view"], json.dumps({"attempt": 2})),
+            *actions_responses("abc", jobs={42: [job("ci", "failure")]},
+                               statuses=[{"context": p.REVIEW_STATUS, "state": "success",
+                                          "description": "attempt 1", "created_at": "2026-09-27T10:30:00Z"}]),
+            (lambda a: "--slurp" in a and any("/reviews" in x for x in a), json.dumps(pages)),
         ])
         [pr] = gh.open_prs()
         self.assertEqual(pr["checks"], "failure")          # ci failed; allowlist etc. would be missing too
@@ -275,6 +304,92 @@ class OpenPrsTests(unittest.TestCase):
         self.assertEqual(len(pr["reviews"]), 2)             # both pages
         self.assertEqual(pr["reviews"][1]["login"], None)   # a deleted ("ghost") account
         self.assertEqual((pr["closingIssues"], pr["crossRepo"]), ([5], False))
+
+    def test_nothing_asks_for_what_a_fine_grained_token_cannot_read(self):
+        # statusCheckRollup and check runs need the Checks permission, which a
+        # fine-grained token cannot have: the first live tick died on it.
+        asked = []
+        listing = [{"number": 105, "headRefOid": "abc"}]
+        gh = CallableFakeGh(responses=[(lambda a: asked.append(a) and False, ""),
+                                       (lambda a: a[:2] == ["pr", "list"], json.dumps(listing))])
+        gh.open_prs()
+        gh.main_health()
+        text = " ".join(" ".join(a) for a in asked)
+        self.assertIn("actions/runs?head_sha=abc", text)
+        for unreadable in ("statusCheckRollup", "check-runs", "check-suites", "pr checks"):
+            self.assertNotIn(unreadable, text)
+
+
+class CiRollupTests(unittest.TestCase):
+    def test_jobs_and_statuses_become_the_rollup(self):
+        gh = CallableFakeGh(responses=actions_responses(
+            "abc",
+            runs=[{"id": 42, "name": "CI", "run_attempt": 1}, {"id": 43, "name": "PR contract", "run_attempt": 3}],
+            jobs={42: [job("ci"), job("tooling", None, "in_progress")],
+                  43: [job("allowlist", run_id=43, attempt=3), job("contract", "failure", run_id=43, attempt=3)]},
+            statuses=[{"context": p.REVIEW_STATUS, "state": "pending", "description": "attempt 2",
+                       "created_at": "2026-09-27T10:30:00Z"}]))
+        rollup = gh.ci_rollup("abc")
+        self.assertEqual(sorted(r.get("name") or r.get("context") for r in rollup),
+                         sorted(["ci", "tooling", "allowlist", "contract", p.REVIEW_STATUS]))
+        out = p.rollup_checks(rollup, ("ci", "tooling", "allowlist", "contract"))
+        self.assertEqual(out["state"], "failure")
+        self.assertEqual(out["failed"], [{"name": "contract", "run": 43, "attempt": 3}])
+        self.assertEqual(out["reviewAttempts"], 2)
+        self.assertEqual([(e["name"], e["outcome"]) for e in out["judged"]],
+                         [("allowlist", "success"), ("ci", "success"), ("contract", "failure"),
+                          ("tooling", "pending")])
+
+    def test_the_run_attempt_comes_from_the_run_when_the_job_lacks_it(self):
+        gh = CallableFakeGh(responses=actions_responses("abc", jobs={42: [job("ci", "failure")]}))
+        out = p.rollup_checks(gh.ci_rollup("abc"), ("ci",))
+        self.assertEqual(out["failed"], [{"name": "ci", "run": 42, "attempt": 2}])
+
+    def test_the_default_branch_is_read_at_its_head(self):
+        gh = CallableFakeGh(responses=[
+            (lambda a: a[:2] == ["api", "repos/{owner}/{repo}/commits/" + p.DEFAULT_BRANCH], "def\n"),
+            *actions_responses("def", jobs={42: [job("ci", "failure"), job("tooling")]})])
+        self.assertEqual(gh.main_health(), {"sha": "def", "state": "failure", "red": ["ci"]})
+
+    def test_a_refused_read_is_unknown_health_not_green(self):
+        gh = CallableFakeGh(responses=[
+            (lambda a: a[:2] == ["api", "repos/{owner}/{repo}/commits/" + p.DEFAULT_BRANCH], "def\n"),
+            (lambda a: any("actions/runs" in x for x in a), p.GhError("HTTP 403: Resource not accessible"))])
+        self.assertIsNone(gh.main_health())
+
+
+class PrChecksTests(unittest.TestCase):
+    def gh(self, jobs, sha="abc"):
+        return CallableFakeGh(responses=[
+            (lambda a: a[:3] == ["pr", "view", "105"], json.dumps({"headRefOid": sha})),
+            *actions_responses(sha, jobs={42: jobs})])
+
+    def test_red_lists_the_run_and_the_log_command(self):
+        result = p.pr_checks(self.gh([job("ci", "failure"), job("tooling")]), 105)
+        self.assertEqual((result["sha"], result["state"]), ("abc", "failure"))
+        self.assertEqual(p.CHECKS_EXIT[result["state"]], 1)
+        text = "\n".join(p.checks_lines(105, result))
+        self.assertRegex(text, r"ci +failure +run 42 \(attempt 2\)")
+        self.assertIn("gh run view 42 --log-failed", text)
+        for name in set(p.REQUIRED_CHECKS) - {"ci", "tooling"}:
+            self.assertRegex(text, rf"{name} +pending +not reported yet")
+
+    def test_a_missing_required_check_is_pending(self):
+        result = p.pr_checks(self.gh([job(c) for c in p.REQUIRED_CHECKS if c != "contract"]), 105)
+        self.assertEqual((result["state"], result["missing"]), ("pending", ["contract"]))
+        self.assertEqual(p.CHECKS_EXIT[result["state"]], 8)
+
+    def test_all_green(self):
+        result = p.pr_checks(self.gh([job(c) for c in p.REQUIRED_CHECKS]), 105)
+        self.assertEqual(p.CHECKS_EXIT[result["state"]], 0)
+        self.assertNotIn("log-failed", "\n".join(p.checks_lines(105, result)))
+
+    def test_a_given_sha_is_judged_not_the_head(self):
+        # Right after the reviewer pushes, the PR may still name the old head.
+        gh = self.gh([job(c) for c in p.REQUIRED_CHECKS], sha="new")
+        gh.responses.insert(0, (lambda a: a[:2] == ["pr", "view"], json.dumps({"headRefOid": "old"})))
+        result = p.pr_checks(gh, 105, sha="new")
+        self.assertEqual((result["sha"], result["state"]), ("new", "success"))
 
 
 class RemoteBranchTests(unittest.TestCase):

@@ -16,6 +16,14 @@
 
 set -u
 
+# The hooks read these from the environment. The suite sets each one where a
+# case needs it and must see none of the caller's: an implementer inside a tick
+# runs this with PIPELINE_TICK=1, and a case that assumes the owner's session
+# failed there in the first live run.
+unset PIPELINE_TICK SCOPE_NO_CACHE SCOPE_COMPANION_SUFFIXES CONTROL_PATHS_FILE \
+      PIPELINE_REVIEWER_TOKEN PIPELINE_REVIEWER_TOKEN_FILE PIPELINE_REVIEWER_LOGIN \
+      PR_ALLOWLIST_IN_FLIGHT AGENT_LOGIN GITHUB_REPOSITORY HEAD_REPO
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS="$(cd "$HERE/.." && pwd)"
 
@@ -355,7 +363,7 @@ expect_eq "bash guard: implementer GET with -F is still a read" 0 "$(bguard "gh 
 expect_eq "bash guard: implementer writes via api"              2 "$(bguard "gh api repos/o/r/issues/5 -X PATCH -f body=x" github-issue-resolver implementer)"
 expect_eq "bash guard: implementer merges"                      2 "$(bguard "gh pr merge 5 --squash" github-issue-resolver implementer)"
 expect_eq "bash guard: implementer pushes its branch"           0 "$(bguard "git push -u origin agent/5-x" github-issue-resolver implementer)"
-expect_eq "bash guard: triage edits an issue"                   0 "$(bguard "gh issue edit 5 --body-file .claude/tmp/issue-5.md" github-triage triage)"
+expect_eq "bash guard: triage edits an issue"                   0 "$(bguard "gh issue edit 5 --body-file .pipeline-tmp/issue-5.md" github-triage triage)"
 expect_eq "bash guard: triage pushes"                           2 "$(bguard "git push origin agent/5-x" github-triage triage)"
 expect_eq "bash guard: planner merges"                          2 "$(bguard "gh pr merge 5" github-planner planner)"
 expect_eq "bash guard: an ordinary command"                     0 "$(bguard "git status" github-issue-resolver implementer)"

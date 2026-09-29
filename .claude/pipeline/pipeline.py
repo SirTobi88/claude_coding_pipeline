@@ -14,6 +14,7 @@ executable form. Everything project-specific lives in config.json beside it.
     pipeline.py set-status ISSUE STATUS set one status label (or "none"), dropping the rest
     pipeline.py check-pr-body           PR description shape, body on stdin (CI)
     pipeline.py setup-repo [--dry-run]  labels, repo settings, branch protection, bot access
+    pipeline.py checks PR [--wait]      the required checks at a PR's head (exit 0 green, 1 red, 8 pending)
     pipeline.py doctor                  check the whole setup, one line per check
     pipeline.py stats [--days N]        what the pipeline did: cycle time, fix rounds, escalations
     pipeline.py config KEY              print one value from config.json (for the shims)
@@ -32,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1374,17 +1376,55 @@ class Gh:
                 return None
             return "unknown"
 
+    def ci_rollup(self, sha: str) -> list[dict]:
+        """Every check on one commit, in the shape of GraphQL's statusCheckRollup.
+
+        Read through the Actions API and the commit statuses, not through
+        check runs: a fine-grained token has no Checks permission, so on a
+        private repository check runs -- and statusCheckRollup, `gh pr checks`
+        -- are unreadable to the token the tick runs with. Every required
+        check is an Actions job, and a job's name is its check's name; the
+        pipeline's own pipeline/* results are commit statuses. Only the latest
+        attempt of each run counts, as it does for branch protection.
+        """
+        rollup: list[dict] = []
+        pages = self.json(["api", "--paginate", "--slurp",
+                           f"repos/{{owner}}/{{repo}}/actions/runs?head_sha={sha}&per_page=100"]) or []
+        for run in (r for page in pages for r in (page or {}).get("workflow_runs") or []):
+            jobs = self.json(["api", "--paginate", "--slurp",
+                              f"repos/{{owner}}/{{repo}}/actions/runs/{run['id']}/jobs"
+                              "?filter=latest&per_page=100"]) or []
+            for job in (j for page in jobs for j in (page or {}).get("jobs") or []):
+                rollup.append({"__typename": "CheckRun", "name": job.get("name"),
+                               "workflowName": run.get("name") or "",
+                               "status": (job.get("status") or "").upper(),
+                               "conclusion": (job.get("conclusion") or "").upper(),
+                               "startedAt": job.get("started_at"), "completedAt": job.get("completed_at"),
+                               "detailsUrl": job.get("html_url") or "",
+                               "runAttempt": job.get("run_attempt") or run.get("run_attempt")})
+        statuses = self.json(["api", "--paginate", "--slurp",
+                              f"repos/{{owner}}/{{repo}}/commits/{sha}/statuses?per_page=100"]) or []
+        for st in (x for page in statuses for x in (page or [])):
+            rollup.append({"__typename": "StatusContext", "context": st.get("context"),
+                           "state": (st.get("state") or "").upper(),
+                           "description": st.get("description") or "", "createdAt": st.get("created_at")})
+        return rollup
+
+    def head_sha(self, ref: str) -> str:
+        return self._run(["api", f"repos/{{owner}}/{{repo}}/commits/{ref}", "--jq", ".sha"]).strip()
+
     def open_prs(self) -> list[dict]:
         raw = self.json(["pr", "list", "--state", "open", "--limit", str(PR_LIMIT), "--json",
                          "number,title,baseRefName,headRefName,headRefOid,isDraft,labels,mergeable,"
-                         "updatedAt,statusCheckRollup,autoMergeRequest,closingIssuesReferences,"
+                         "updatedAt,autoMergeRequest,closingIssuesReferences,"
                          "isCrossRepository"]) or []
         prs = []
         for p in raw:
             pages = self.json(["api", "--paginate", "--slurp",
                                f"repos/{{owner}}/{{repo}}/pulls/{p['number']}/reviews?per_page=100"]) or []
             reviews = [r for page in pages for r in (page or [])]
-            checks = rollup_checks(p.get("statusCheckRollup") or [], REQUIRED_CHECKS)
+            checks = rollup_checks(self.ci_rollup(p["headRefOid"]) if p.get("headRefOid") else [],
+                                   REQUIRED_CHECKS)
             item = {
                 "number": p["number"], "title": p.get("title", ""),
                 "headRefName": p.get("headRefName", ""), "headRefOid": p.get("headRefOid", ""),
@@ -1405,18 +1445,10 @@ class Gh:
             }
             if checks["state"] == "failure":
                 # Which failed runs were already re-run: decide() re-runs a
-                # first attempt once before it spends an agent on it.
-                item["failedRuns"] = []
-                attempts_of: dict = {}
-                for f in checks["failed"]:
-                    if f["run"] and f["run"] not in attempts_of:
-                        try:
-                            attempts_of[f["run"]] = (self.json(["run", "view", str(f["run"]), "--json",
-                                                                "attempt"]) or {}).get("attempt")
-                        except GhError:
-                            attempts_of[f["run"]] = None
-                    item["failedRuns"].append({"name": f["name"], "run": f["run"],
-                                               "attempt": attempts_of.get(f["run"]) or 99})
+                # first attempt once before it spends an agent on it. An
+                # unknown attempt counts as re-run: better a fix pass than a loop.
+                item["failedRuns"] = [{"name": f["name"], "run": f["run"], "attempt": f["attempt"] or 99}
+                                      for f in checks["failed"]]
             elif checks["state"] == "pending" and item["headRefOid"]:
                 try:
                     item["headAt"] = self._run(
@@ -1443,22 +1475,13 @@ class Gh:
     def main_health(self) -> dict | None:
         """The default branch's head and which required checks fail there."""
         try:
-            data = self.json(["api", f"repos/{{owner}}/{{repo}}/commits/{DEFAULT_BRANCH}/check-runs"
-                                     "?per_page=100"]) or {}
-            runs = data.get("check_runs") or []
-            sha = runs[0].get("head_sha") if runs else self._run(
-                ["api", f"repos/{{owner}}/{{repo}}/commits/{DEFAULT_BRANCH}", "--jq", ".sha"]).strip()
+            sha = self.head_sha(DEFAULT_BRANCH)
+            rollup = self.ci_rollup(sha) if sha else []
         except GhError:
             return None
-        rollup = [{"__typename": "CheckRun", "name": r.get("name"),
-                   "workflowName": str((r.get("check_suite") or {}).get("id") or ""),
-                   "status": (r.get("status") or "").upper(),
-                   "conclusion": (r.get("conclusion") or "").upper(),
-                   "startedAt": r.get("started_at"), "completedAt": r.get("completed_at"),
-                   "detailsUrl": r.get("details_url")} for r in runs]
         # Only the required checks that run on a push count: allowlist and
         # contract never run on the default branch, and their absence is not red.
-        present = {r["name"] for r in rollup}
+        present = {r.get("name") for r in rollup}
         judged = tuple(c for c in REQUIRED_CHECKS if c in present)
         checks = rollup_checks(rollup, judged) if judged else {"state": "pending", "failed": []}
         return {"sha": sha, "state": checks["state"],
@@ -1606,8 +1629,9 @@ class Gh:
 def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
     """The required checks at a pull request's head.
 
-    {"state": pending | success | failure, "failed": [{"name", "run"}],
-     "missing": [...], "reviewAttempts": n}
+    {"state": pending | success | failure, "failed": [{"name", "run", "attempt"}],
+     "missing": [...], "judged": [{"name", "outcome", "run", "attempt"}],
+     "reviewAttempts": n, ...}
 
     Branch protection judges the required checks and nothing else, so neither
     does this: an optional check that fails does not send a PR to a fix pass,
@@ -1625,7 +1649,7 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
             s = (c.get("state") or "").upper()
             outcome = ("pending" if s in ("PENDING", "EXPECTED", "") else
                        "success" if s == "SUCCESS" else "failure")
-            run = None
+            run = attempt = None
         else:
             name = c.get("name") or ""
             key = (c.get("workflowName") or "", "run", name)
@@ -1641,13 +1665,14 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
                 outcome = "failure"
             m = re.search(r"/actions/runs/(\d+)", c.get("detailsUrl") or "")
             run = int(m.group(1)) if m else None
+            attempt = c.get("runAttempt")
         # A run with no start time yet is one just queued -- a re-run, say --
         # so it is newer than anything that has a time.
         if not when and outcome == "pending":
             when = "9999"
         if key not in latest or when >= latest[key]["when"]:
             latest[key] = {"name": name, "outcome": outcome, "when": when, "run": run,
-                           "description": c.get("description") or ""}
+                           "attempt": attempt, "description": c.get("description") or ""}
 
     attempts = 0
     answered = {"comments": 0, "attempts": 0}
@@ -1668,8 +1693,11 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
     pending = [e for e in judged if e["outcome"] == "pending"]
     state = "failure" if failed else "pending" if (pending or missing or not judged) else "success"
     started = max((e["when"] for e in judged if e["when"] and e["when"] != "9999"), default="") or None
-    return {"state": state, "failed": [{"name": e["name"], "run": e["run"]} for e in failed],
+    return {"state": state,
+            "failed": [{"name": e["name"], "run": e["run"], "attempt": e["attempt"]} for e in failed],
             "missing": missing, "reviewAttempts": attempts, "since": started,
+            "judged": sorted(({k: e[k] for k in ("name", "outcome", "run", "attempt")} for e in judged),
+                             key=lambda e: e["name"]),
             "answeredComments": answered["comments"], "answeredAttempts": answered["attempts"]}
 
 
@@ -1961,6 +1989,14 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
         state["state"] + (": " + "; ".join(state["problems"]) if state["problems"] else ""))
 
     try:
+        sha = gh.head_sha(DEFAULT_BRANCH)
+        jobs_seen = sum(1 for r in (gh.ci_rollup(sha) if sha else []) if r.get("__typename") == "CheckRun")
+        add("ok", "CI readable", f"{jobs_seen} jobs at the head of {DEFAULT_BRANCH}, read through the Actions API")
+    except GhError as e:
+        add("fail", "CI readable", f"{str(e)[:120]} -- the token needs Actions and Commit statuses "
+                                   "(docs/Pipeline.md § Setup, step 2)")
+
+    try:
         wf = gh.json(["api", "repos/{owner}/{repo}/actions/permissions/workflow"]) or {}
         ok = wf.get("default_workflow_permissions") == "read" and not wf.get("can_approve_pull_request_reviews")
         add("ok" if ok else "fail", "Actions token", "read-only, cannot approve" if ok
@@ -2198,6 +2234,43 @@ def cmd_doctor(args) -> int:
     fails = sum(1 for level, _, _ in report if level == "fail")
     print(f"\n{fails} failing, {sum(1 for l, _, _ in report if l == 'warn')} warnings")
     return 1 if fails else 0
+
+
+CHECKS_EXIT = {"success": 0, "failure": 1, "pending": 8}   # the exit codes of `gh pr checks`
+
+
+def pr_checks(gh: "Gh", number: int, sha: str | None = None) -> dict:
+    """The required checks at a pull request's head (or at `sha`), read the
+    way the tick reads them: `gh pr checks` needs a permission a fine-grained
+    token cannot have (Gh.ci_rollup)."""
+    if not sha:
+        sha = (gh.json(["pr", "view", str(number), "--json", "headRefOid"]) or {}).get("headRefOid") or ""
+    return {"sha": sha, **rollup_checks(gh.ci_rollup(sha) if sha else [], REQUIRED_CHECKS)}
+
+
+def checks_lines(number: int, result: dict) -> list[str]:
+    width = max((len(c) for c in REQUIRED_CHECKS), default=8)
+    lines = [f"PR #{number} at {result['sha'][:10] or '?'}: {result['state']}"]
+    for e in result["judged"]:
+        where = (f"run {e['run']}" + (f" (attempt {e['attempt']})" if e["attempt"] else "")) if e["run"] else ""
+        lines.append(f"  {e['name'].ljust(width)}  {e['outcome']:8} {where}".rstrip())
+    for name in result["missing"]:
+        lines.append(f"  {name.ljust(width)}  {'pending':8} not reported yet")
+    for run in sorted({e["run"] for e in result["judged"] if e["outcome"] == "failure" and e["run"]}):
+        lines.append(f"logs: gh run view {run} --log-failed")
+    return lines
+
+
+def cmd_checks(args) -> int:
+    gh = Gh()
+    deadline = time.monotonic() + args.timeout
+    while True:
+        result = pr_checks(gh, args.number, args.sha)
+        if result["state"] != "pending" or not args.wait or time.monotonic() >= deadline:
+            break
+        time.sleep(min(args.interval, max(1.0, deadline - time.monotonic())))
+    print("\n".join(checks_lines(args.number, result)))
+    return CHECKS_EXIT[result["state"]]
 
 
 def cmd_stats(args) -> int:
@@ -2516,6 +2589,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("check-pr-body"); s.set_defaults(fn=cmd_check_pr_body)
     s = sub.add_parser("setup-repo"); s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_setup_repo)
+    s = sub.add_parser("checks", help="the required checks at a PR's head: exit 0 green, 1 red, 8 pending")
+    s.add_argument("number", type=int)
+    s.add_argument("--sha", help="judge this commit instead of the PR's current head")
+    s.add_argument("--wait", action="store_true", help="poll until no check is pending, or --timeout")
+    s.add_argument("--timeout", type=float, default=540, help="seconds, default 540 (under the 10-minute Bash cap)")
+    s.add_argument("--interval", type=float, default=30); s.set_defaults(fn=cmd_checks)
     s = sub.add_parser("doctor"); s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("stats"); s.add_argument("--days", type=int, default=30); s.set_defaults(fn=cmd_stats)
     s = sub.add_parser("config"); s.add_argument("key"); s.set_defaults(fn=cmd_config)

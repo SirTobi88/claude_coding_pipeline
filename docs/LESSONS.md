@@ -212,6 +212,25 @@ saves `token` as `token.txt`. PowerShell 5.1 turns native stderr into errors, so
 out with CRLF, which bash cannot run, and marks LF-written generated files as
 modified after every run.
 
+**Test with the token the pipeline runs with.** The template's first live tick
+stopped on its third survey: listing pull requests asked for
+`statusCheckRollup`, and GitHub answered *Resource not accessible by personal
+access token*. A fine-grained token has no Checks permission, so on a private
+repository it cannot read check runs. The tick and the `gh pr checks` calls in
+three prompts had only ever run under the owner's full login. The pipeline now
+reads CI through the Actions API (`.claude/bin/pipeline checks`), and
+`doctor` reports whether the token can.
+
+**Protected paths beat allow rules.** Scratch files went to `.claude/tmp/`,
+with an allow rule for it. In `dontAsk` mode Claude Code refuses every write
+under `.claude/` except `.claude/worktrees/`, whatever the rules say, so the
+planner had to improvise. Scratch space is `.pipeline-tmp/` now.
+
+**A test suite inherits the shell it runs in.** The hook suite passed in the
+owner's terminal and failed inside a tick: one case assumed `PIPELINE_TICK` was
+unset, and the implementer's shell had it set. The suite now clears every
+variable the hooks read before its first case.
+
 ---
 
 ## The planner
