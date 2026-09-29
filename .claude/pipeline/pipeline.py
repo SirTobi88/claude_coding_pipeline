@@ -548,6 +548,11 @@ def lint_body(number: int, body: str, allowlist_fn, state_fn, repo_root: Path = 
                 r.warnings.append(f"`{e}` is a directory, but reads as a file; write `{e}/` to "
                                   "allow what is under it")
 
+    size = find_section(sections, "Size") or ""
+    if re.search(r"^\s*[-*]\s*\[[xX]\]\s*Too big", size, flags=re.M):
+        r.problems.append("`## Size` is ticked *Too big*: split it into single seams before it is "
+                          "handed out")
+
     for sec in ("Interface", "Context"):
         text = find_section(sections, sec) or ""
         if re.search(r"\bL\d+(\s*[–-]\s*\d+)?\b", text):
@@ -566,11 +571,26 @@ def lint_body(number: int, body: str, allowlist_fn, state_fn, repo_root: Path = 
     return r
 
 
+LINT_MARKER = "<!-- issue-lint -->"
+
+
 def lint_comment(number: int, result: LintResult) -> str:
-    lines = ["<!-- issue-lint -->", f"**issue-lint: #{number} is not ready to hand out.**", ""]
-    lines += [f"- {p}" for p in result.problems]
-    if result.warnings:
-        lines += ["", "Also worth fixing:"] + [f"- {w}" for w in result.warnings]
+    """The issue's one lint note: what blocks it, else what is worth fixing,
+    else that it is ready. Rewritten in place on every lint, never repeated --
+    and a ready issue with warnings gets one too: a line-number anchor that
+    nobody is told about is the escalation it causes later."""
+    lines = [LINT_MARKER]
+    if result.problems:
+        lines += [f"**issue-lint: #{number} is not ready to hand out.**", ""]
+        lines += [f"- {p}" for p in result.problems]
+        if result.warnings:
+            lines += ["", "Also worth fixing:"] + [f"- {w}" for w in result.warnings]
+    elif result.warnings:
+        lines += [f"**issue-lint: #{number} is ready, but worth fixing:**", ""]
+        lines += [f"- {w}" for w in result.warnings]
+    else:
+        lines += [f"**issue-lint: #{number} is ready.**"]
+        return "\n".join(lines)
     lines += ["", "Edit the issue body; the lint re-runs on every edit. "
               "The template is `.github/ISSUE_TEMPLATE/agent-task.md`."]
     return "\n".join(lines)
@@ -777,6 +797,14 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             # A fork's branch is nobody's claim, whatever it is called; its
             # code is an outsider's. Agents neither review nor fix it.
             plan.awaiting_human.append(f"{tag}: from a fork -- review it yourself")
+            continue
+        if (pr.get("base") or DEFAULT_BRANCH) != DEFAULT_BRANCH:
+            # A stacked PR: merging it lands nothing on the default branch and
+            # closes no issue, however "Closes #N" its body says. Once its base
+            # has merged, point it at the default branch.
+            plan.awaiting_human.append(
+                f"{tag}: targets {pr['base']}, not {DEFAULT_BRANCH} -- merging it lands nothing on "
+                f"{DEFAULT_BRANCH} and closes no issue; retarget it once {pr['base']} has merged")
             continue
         issue_n = pr_issue.get(n)
         if NEEDS_HUMAN in labels and ANSWERED in labels:
@@ -1150,7 +1178,8 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                                  if target == IN_REVIEW else "; ".join(result.problems)
                                  or f"blocked by #{', #'.join(map(str, result.blockers_open))}")
                     if target == NEEDS_SPEC:
-                        comment("issue", n, lint_comment(n, result))
+                        plan.ops.append({"op": "lint-note", "number": n,
+                                         "body": lint_comment(n, result), "clean": False})
                 if target == BLOCKED:
                     plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
                 continue
@@ -1158,8 +1187,8 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                 issue_status(n, desired, status, "; ".join(result.problems) or
                              (f"blocked by #{', #'.join(map(str, result.blockers_open))}"
                               if result.blockers_open else "lint passed"))
-                if desired == NEEDS_SPEC:
-                    comment("issue", n, lint_comment(n, result))
+                plan.ops.append({"op": "lint-note", "number": n, "body": lint_comment(n, result),
+                                 "clean": not (result.problems or result.warnings)})
                 if desired in active_statuses and status not in active_statuses:
                     active += 1
             if desired == READY:
@@ -1347,7 +1376,7 @@ class Gh:
 
     def open_prs(self) -> list[dict]:
         raw = self.json(["pr", "list", "--state", "open", "--limit", str(PR_LIMIT), "--json",
-                         "number,title,headRefName,headRefOid,isDraft,labels,mergeable,"
+                         "number,title,baseRefName,headRefName,headRefOid,isDraft,labels,mergeable,"
                          "updatedAt,statusCheckRollup,autoMergeRequest,closingIssuesReferences,"
                          "isCrossRepository"]) or []
         prs = []
@@ -1359,6 +1388,7 @@ class Gh:
             item = {
                 "number": p["number"], "title": p.get("title", ""),
                 "headRefName": p.get("headRefName", ""), "headRefOid": p.get("headRefOid", ""),
+                "base": p.get("baseRefName") or DEFAULT_BRANCH,
                 "isDraft": p.get("isDraft", False), "labels": p.get("labels", []),
                 "crossRepo": bool(p.get("isCrossRepository")),
                 "mergeable": p.get("mergeable"), "updatedAt": p.get("updatedAt"),
@@ -1499,6 +1529,26 @@ class Gh:
             return {"state": "unreadable", "problems": [text[:200]]}
         drift = protection_drift(actual, protection_payload(actions_app_id(self)))
         return {"state": "drift" if drift else "ok", "problems": drift}
+
+    def upsert_lint_note(self, n: int, body: str, clean: bool = False) -> None:
+        """Keep one lint note per issue: edit it when it changes, add it when
+        there is something to say, leave a clean issue without one alone."""
+        pages = self.json(["api", "--paginate", "--slurp",
+                           f"repos/{{owner}}/{{repo}}/issues/{n}/comments?per_page=100"]) or []
+        notes = [c for page in pages for c in (page or [])
+                 if (c.get("body") or "").lstrip().startswith(LINT_MARKER)]
+        if notes:
+            note = notes[-1]
+            if (note.get("body") or "").strip() == body.strip():
+                return
+            try:
+                self._run(["api", "-X", "PATCH", f"repos/{{owner}}/{{repo}}/issues/comments/{note['id']}",
+                           "-F", "body=@-"], input=body, mutating=True)
+                return
+            except GhError:
+                pass  # someone else's note this token may not edit: add a fresh one
+        if not clean or notes:
+            self.comment("issue", n, body)
 
     def disable_automerge(self, n: int) -> None:
         self._run(["pr", "merge", str(n), "--disable-auto"], mutating=True)
@@ -1984,8 +2034,10 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
                 issue = gh.issue(n)
                 result = lint_fn(issue)
                 gh.set_status(n, result.status, expect=None)
-                if result.status == NEEDS_SPEC:
-                    gh.comment("issue", n, lint_comment(n, result))
+                gh.upsert_lint_note(n, lint_comment(n, result),
+                                    clean=not (result.problems or result.warnings))
+            elif kind == "lint-note":
+                gh.upsert_lint_note(n, op["body"], clean=bool(op.get("clean")))
             elif kind == "add-label":
                 gh.edit_labels(op["kind"], n, add=[op["label"]])
             elif kind == "remove-label":
@@ -2183,9 +2235,11 @@ def cmd_lint(args) -> int:
         except StaleState as e:
             report["skipped"] = str(e)
         else:
-            if result.status == NEEDS_SPEC:
-                gh.comment("issue", args.issue, lint_comment(args.issue, result))
             report["applied"] = True
+    if args.apply and status in LINT_OWNED and WORKING not in labels and "skipped" not in report:
+        # On every edit, changed status or not: the note says what the lint sees now.
+        gh.upsert_lint_note(args.issue, lint_comment(args.issue, result),
+                            clean=not (result.problems or result.warnings))
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 
@@ -2211,8 +2265,8 @@ def cmd_relint(args) -> int:
                 except StaleState:
                     changed[-1]["skipped"] = "moved since the survey"
                     continue
-                if result.status == NEEDS_SPEC:
-                    gh.comment("issue", issue["number"], lint_comment(issue["number"], result))
+                gh.upsert_lint_note(issue["number"], lint_comment(issue["number"], result),
+                                    clean=not (result.problems or result.warnings))
     print(json.dumps({"changed": changed}, indent=2, ensure_ascii=False))
     return 0
 

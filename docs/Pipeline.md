@@ -81,6 +81,11 @@ in-progress, needs-spec, blocked, ready) and the tick removes the other. Every
 status the tick writes is compare-and-set: it re-reads the labels and writes
 nothing if the issue moved since the survey.
 
+Issue-lint keeps **one comment** on each issue, marked `<!-- issue-lint -->`
+and rewritten in place: what blocks it, otherwise what is worth fixing
+(line-number anchors, a list the parser will read differently than a person),
+otherwise that it is ready.
+
 Issue-lint owns only the first three. It never touches an issue that is in
 progress, in review, escalated, waiting on a human, or held by an agent
 (`pipeline:working`). A second escalation or spec rejection after triage has
@@ -104,6 +109,7 @@ A pull request moves only while its issue lets it. In order:
 | Condition | Next owner |
 |---|---|
 | from a fork | **the owner** — agents never review or fix an outsider's branch |
+| targets a branch other than the default | **the owner** — merging it lands nothing on the default branch and closes no issue; retarget it once its base has merged |
 | `status:needs-human` | **the owner** — `human:answered` hands it back (§ What stays with the owner) |
 | bound to no issue (no `agent/<N>-` branch, nothing it closes) | **the owner** (a draft just waits) |
 | a second open PR for the same issue | **the owner**, labelled `status:needs-human`: close one |

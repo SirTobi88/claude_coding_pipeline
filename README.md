@@ -151,7 +151,12 @@ run_tests.sh              the single test entry point (here: the pipeline's own 
 
 - Every tick is a Claude session; every dispatched job is a subagent run. Opus
   runs (planner, reviewer, triage) dominate. Tune `limits` in
-  `.claude/pipeline/config.json` and the schedule to your budget.
+  `.claude/pipeline/config.json` and the schedule to your budget;
+  `max_agent_runs_per_day` (default 50) is the hard ceiling, and
+  `pipeline stats` shows where the runs went.
+- The optional `portability` workflow runs on macOS and Windows runners, which
+  cost ten and two times the Linux minutes on a private repository. It runs
+  only when the hooks or the pipeline change.
 - The tick runs locally, so it only runs while the Claude desktop app (or your
   `/loop` session) is running. Missed scheduled runs catch up on the next start.
 - The allowlist guard only sees edits made through Claude's file-editing tools;

@@ -66,6 +66,13 @@ and the PR looked unreviewed forever — on a five-minute timer that re-spawned 
 Opus reviewer against the same PR indefinitely. Reviews now carry the commit
 they judged, and an approval of an older commit means "review again".
 
+**A stacked pull request lands where it points.** Found running this
+template: wave 4 was stacked on wave 3's branch, wave 3 merged, and wave 4 was
+merged three minutes later — into the old branch, not the default one. Nothing
+reached `main`, and its `Closes #8` did nothing, because GitHub closes issues
+only for merges into the default branch. The tick now lists any PR aimed
+elsewhere under *Needs you*; the pipeline itself never stacks.
+
 **Direct pushes happen when they are allowed.** Six commits went straight to the
 default branch after the initial setup, one of them a feature implementation.
 Protection with admins included ended that.
@@ -102,7 +109,9 @@ reviews in a separate session under a user that alone can read it
 **Line-number anchors rot.** Issues quoted interfaces as `file.gd L157–182`.
 The next merge shifted the lines, and "the quoted interface does not match the
 repo" is a mandatory escalation — so a correct issue became a blocked one.
-Anchor on symbol names; issue-lint warns on line anchors.
+Anchor on symbol names; issue-lint warns on line anchors — in its note on the
+issue even when the issue is otherwise ready, since a warning nobody sees
+prevents nothing.
 
 **Interfaces land before implementations.** An agent asked to "design a sensible
 API" designs a different one than the next agent expects. Pin signatures in the

@@ -22,6 +22,8 @@ change** — docs going stale is how a project loses its coherence.
 | How work is cut up and judged | `CONTRIBUTING-agents.md` |
 | How work moves: agents, labels, review, merge, setup | `docs/Pipeline.md` |
 | Test command, worktrees, platform hazards | `docs/AgentEnvironment.md` |
+| Why each rule exists — read before changing or removing one | `docs/LESSONS.md` |
+| Bringing the pipeline into a project, and upgrading it | `docs/ADOPTING.md` |
 | *(your design docs)* | |
 
 ---
@@ -70,7 +72,10 @@ anything an agent might "helpfully" change. Keep each to one or two lines. -->
   One issue per PR, described per `.github/pull_request_template.md`.
 - **Nobody judges their own work, and nobody pushes to the default branch**:
   branch protection requires the required checks plus an approval from the
-  reviewer bot, and GitHub merges on that.
+  reviewer bot, and GitHub merges on that. The one exception is deliberate: the
+  reviewer fixes mechanical defects inside the allowlist and then approves
+  them (`docs/Pipeline.md` § Merging says why "require approval of the most
+  recent push" is off).
 - **Parallel work happens in worktrees, never in one checkout** — see
   `docs/AgentEnvironment.md`.
 - Generated files say so in a header. Never edit one; edit its generator.

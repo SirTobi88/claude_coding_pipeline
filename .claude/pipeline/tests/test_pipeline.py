@@ -344,7 +344,7 @@ class DecideIssueTests(unittest.TestCase):
     def test_bad_spec_gets_needs_spec_and_a_comment(self):
         plan = run([issue(5, [p.AGENT_TASK], body=TEMPLATE_BODY)])
         self.assertEqual(ops(plan, "set-status")[0]["status"], p.NEEDS_SPEC)
-        self.assertIn("issue-lint", ops(plan, "comment")[0]["body"])
+        self.assertIn("issue-lint", ops(plan, "lint-note")[0]["body"])
         self.assertEqual(plan.dispatch, [])
 
     def test_blocked_becomes_ready_when_blocker_closes(self):
@@ -828,7 +828,7 @@ class OwnerAnswerTests(unittest.TestCase):
         self.assertIn(p.ANSWERED, note["body"])
 
     def test_ordinary_comments_are_not_hand_offs(self):
-        plan = run([issue(5, [p.AGENT_TASK], body=TEMPLATE_BODY)], owner_login="SirTobi88")
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_REVIEW])], owner_login="SirTobi88")
         self.assertFalse(ops(plan, "comment")[0]["as_bot"])
 
     def test_fix_passes_learn_who_the_reviewer_is(self):
@@ -934,6 +934,52 @@ class GrammarTests(unittest.TestCase):
         self.assertTrue(p.paths_overlap("src/[ab].py", "src/a.py", companions=()))
         self.assertTrue(p.paths_overlap("src/a.gd", "src/a.gd.uid", companions=(".uid",)))
         self.assertFalse(p.paths_overlap("src/a.gd", "src/a.gd.uid", companions=()))
+
+
+
+class LintNoteTests(unittest.TestCase):
+    def result(self, problems=(), warnings=()):
+        return p.LintResult(problems=list(problems), warnings=list(warnings))
+
+    def test_the_note_says_what_matters_most(self):
+        blocked = p.lint_comment(5, self.result(["missing section `## Goal`"], ["L12 rots"]))
+        self.assertIn("not ready", blocked)
+        self.assertIn("Also worth fixing", blocked)
+        warned = p.lint_comment(5, self.result(warnings=["`## Interface` anchors on line numbers"]))
+        self.assertIn("is ready, but worth fixing", warned)
+        self.assertEqual(p.lint_comment(5, self.result()), f"{p.LINT_MARKER}\n**issue-lint: #5 is ready.**")
+
+    def test_a_ready_issue_with_warnings_gets_a_note(self):
+        # Line anchors were warned about and then dropped when the issue was
+        # otherwise ready -- the escalation came later, when the lines moved.
+        body = READY_BODY.replace("## Context\n", "## Context\n\nSee world.py L12-30.\n")
+        plan = run([issue(5, [p.AGENT_TASK], body=body)])
+        note = ops(plan, "lint-note")[0]
+        self.assertIn("line numbers", note["body"])
+        self.assertFalse(note["clean"])
+
+    def test_a_clean_issue_gets_a_clean_note(self):
+        plan = run([issue(5, [p.AGENT_TASK])])
+        self.assertTrue(ops(plan, "lint-note")[0]["clean"])
+
+    def test_too_big_is_a_problem_other_sizes_are_not(self):
+        big = READY_BODY + "\n## Size\n\n- [ ] Small\n- [x] Too big — split before filing\n"
+        self.assertTrue(any("Too big" in x for x in p.lint_body(5, big, fake_allowlist, lambda n: "closed").problems))
+        small = READY_BODY + "\n## Size\n\n- [x] Small — one file\n- [ ] Too big — split before filing\n"
+        self.assertEqual(p.lint_body(5, small, fake_allowlist, lambda n: "closed").problems, [])
+
+
+class BaseBranchTests(unittest.TestCase):
+    def test_a_stacked_pr_goes_to_the_owner_and_gets_no_agent(self):
+        # PR #9 was merged into its stacked base: nothing reached main, and
+        # its "Closes #8" did nothing.
+        plan = run([], [dict(pr(105, checks="failure"), base="fix/other-branch")])
+        self.assertEqual([d for d in plan.dispatch if d.get("pr")], [])
+        self.assertTrue(any("targets fix/other-branch" in w for w in plan.awaiting_human))
+
+    def test_a_pr_on_the_default_branch_is_unaffected(self):
+        plan = run([], [dict(pr(105), base=p.DEFAULT_BRANCH)])
+        self.assertEqual(kinds(plan), [("review", 5, 105)])
 
 
 @unittest.skipUnless(p.bash_path(), "bash not available")

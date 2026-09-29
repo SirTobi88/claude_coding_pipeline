@@ -205,6 +205,33 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(gh.labels_of[("pr", 105)], set())
 
 
+class LintNoteUpsertTests(unittest.TestCase):
+    def gh_with(self, comments):
+        import json as _json
+        return FakeGh(responses=[(lambda a: "--slurp" in a and "/comments" in a[-1], _json.dumps([comments]))])
+
+    def test_a_clean_issue_without_a_note_gets_none(self):
+        gh = self.gh_with([])
+        gh.upsert_lint_note(5, "note", clean=True)
+        self.assertEqual(gh.writes, [])
+
+    def test_something_to_say_is_said_once(self):
+        gh = self.gh_with([])
+        gh.upsert_lint_note(5, f"{p.LINT_MARKER} warn", clean=False)
+        self.assertEqual([w[:2] for w in gh.writes], [["issue", "comment"]])
+
+    def test_the_same_note_is_not_written_again(self):
+        gh = self.gh_with([{"id": 7, "body": f"{p.LINT_MARKER} warn"}])
+        gh.upsert_lint_note(5, f"{p.LINT_MARKER} warn", clean=False)
+        self.assertEqual(gh.writes, [])
+
+    def test_a_changed_note_is_edited_in_place(self):
+        gh = self.gh_with([{"id": 7, "body": "hello"}, {"id": 9, "body": f"{p.LINT_MARKER} old"}])
+        gh.upsert_lint_note(5, f"{p.LINT_MARKER} ready", clean=True)
+        self.assertEqual(len(gh.writes), 1)
+        self.assertIn("repos/{owner}/{repo}/issues/comments/9", gh.writes[0])
+
+
 class AutoMergeTests(unittest.TestCase):
     def test_merge_is_pinned_and_falls_back_on_a_clean_pr(self):
         gh = FakeGh(responses=[(lambda a: a[:2] == ["pr", "merge"] and "--auto" in a,
