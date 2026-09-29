@@ -51,8 +51,9 @@ Commit `415e0ab` — one allowlist grammar, and a harder edit-time guard.
   `issue_scope.sh`, and both the bash guard and the Python lint follow it
   instead of each guessing at markdown lists independently.
 - issue-lint now warns when its own parser would read an issue's Files in
-  scope differently from a person, such as a list item that starts with a
-  path or a directory written without a trailing slash.
+  scope differently from a person, such as a list with no top-level item that
+  starts with a path, two paths in one item, or a directory written without a
+  trailing slash.
 
 ### Fixed
 - The edit-time guard now takes the repo-relative path from git's own
@@ -98,7 +99,7 @@ Commit `594f3cd` — give every state a next owner (the state machine).
   whenever the issue is escalated, needs-spec, blocked, being re-judged, or
   held by triage.
 - A stale in-progress claim now resumes a pushed branch or is re-queued once
-  before escalating, instead of resuming or looping forever.
+  before escalating, instead of sitting at "implementer working" forever.
 - Only the required checks now gate a PR: a missing required check is
   pending, an optional check's failure is ignored, and only a check's latest
   run counts.
@@ -118,9 +119,9 @@ Commit `992f60a` — close the agents' trust boundary and judge PRs from main.
 - Only the reviewer subagent can now run `gh-reviewer` and approve a PR as
   the bot; no other agent session, and never the tick itself, can approve its
   own work.
-- Agents no longer hold the owner's admin login with `gh api` broadly
-  pre-approved; pushes, edits, and API calls are narrowed to the rules an
-  agent actually needs.
+- Agents acting through the owner's admin login no longer have `gh api`
+  broadly pre-approved; pushes, edits, and API calls are narrowed to the rules
+  an agent actually needs.
 - The required checks now run from the default branch's own workflow files
   instead of the PR's copy, so a PR can no longer rewrite `allowlist` to
   pass.
