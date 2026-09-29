@@ -175,7 +175,7 @@ APPROVE.
 
 ## 9. The verdict — one review, as the bot, pinned to the commit
 
-Write the report to a temp file. First line `**Verdict: <VERDICT>**`, then: what
+Write the report to `.claude/tmp/review-<N>.md` (gitignored scratch space). First line `**Verdict: <VERDICT>**`, then: what
 you checked (§ 2–7, one line each), each finding with its route, what you fixed,
 follow-up issues filed.
 
@@ -194,7 +194,7 @@ Submit through the API so the review names the commit explicitly:
 
 ```bash
 .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/<N>/reviews" \
-  -f commit_id="$sha" -f event=<EVENT> -F body=@report.md
+  -f commit_id="$sha" -f event=<EVENT> -F body=@.claude/tmp/review-<N>.md
 ```
 
 | Verdict | `event` | Then |

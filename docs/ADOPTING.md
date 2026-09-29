@@ -37,7 +37,8 @@ cp -r .claude .github CONTRIBUTING-agents.md docs ../my-project/
 # then merge CLAUDE.md, .gitattributes, settings.json and ci.yml by hand
 ```
 
-Add `.claude/worktrees/` and `.claude/settings.local.json` to `.gitignore`.
+Add `.claude/worktrees/`, `.claude/tmp/` and `.claude/settings.local.json` to
+`.gitignore`.
 
 ---
 
@@ -48,7 +49,8 @@ editing.
 
 | Where | What to set |
 |---|---|
-| `.claude/pipeline/config.json` | `project`, `default_branch`, `test_command`, `required_checks`, `roadmap_docs`, `reviewer_token_file`, `limits` |
+| `.claude/pipeline/config.json` | `project`, `default_branch`, `test_command`, `required_checks`, `roadmap_docs`, `reviewer_token_file`, `agent_login` (**required when the repository belongs to an organisation**: the login whose token the agents use; on a personal repository it defaults to the owner), `control_paths` (add any file of yours that decides what agents may do), `limits` |
+| `.claude/settings.json` | if your `test_command` differs, replace the `Bash(./run_tests.sh *)` rule with it, and the matching entry in `USED` in `.claude/pipeline/tests/test_settings.py` |
 | `run_tests.sh` (or your `test_command`) | runs the whole suite; finds its own tools; first line says what ran, last line is a summary; exit code is the result |
 | `.github/workflows/ci.yml` → job `ci` | install your toolchain (pinned versions), run the test command |
 | `CONTRIBUTING-agents.md` § *Project rules* | architecture rules, never-hand-edit files, one-at-a-time files, and what enforces each |
@@ -68,15 +70,37 @@ the definition of done.
 
 Follow `docs/Pipeline.md` § *Setup*:
 
-1. Tools on the pipeline machine: `gh` (authenticated as you), `jq`, Python ≥
-   3.9, bash, your toolchain. Fully restart the Claude app afterwards.
-2. A reviewer bot account with a classic `repo` token at `reviewer_token_file`.
-3. `.claude/bin/pipeline setup-repo --dry-run`, then without `--dry-run`.
-   Requires branch protection on your plan (public repo, or GitHub Pro/Team).
-4. One tick by hand: `/pipeline-tick`. Then schedule it.
+1. Tools on the pipeline machine: `gh`, `jq`, Python ≥ 3.9, bash, your
+   toolchain. Fully restart the Claude app afterwards.
+2. The agents' token: fine-grained, this repository only, no Administration and
+   no Workflows permission, as the credential the tick runs with.
+3. A reviewer bot account with a classic `repo` token at `reviewer_token_file`.
+4. `.claude/bin/pipeline setup-repo --dry-run`, then without `--dry-run`, with
+   your own login. Requires branch protection on your plan (public repo, or
+   GitHub Pro/Team).
+5. One tick by hand in `dontAsk` mode: `/pipeline-tick`. Then schedule it,
+   still in `dontAsk`.
 
-Commit the adoption itself **before** step 3 — afterwards the default branch only
+Commit the adoption itself **before** step 4 — afterwards the default branch only
 accepts reviewed pull requests.
+
+### Upgrading a repository that already runs the pipeline
+
+Some upgrades change how a required check is triggered — the move of
+`allowlist` and `contract` from `pull_request` to `pull_request_target` is one.
+The pull request that makes such a change gets neither check: `pull_request`
+now finds no job in its own copy of the workflow, and `pull_request_target`
+runs the default branch's copy, which does not listen to that event yet. With
+the checks required, it can never merge. For that one pull request, drop the
+two checks from the protection (with your own login):
+
+```bash
+gh api -X PATCH repos/{owner}/{repo}/branches/main/protection/required_status_checks \
+  -F strict=false -f 'contexts[]=ci' -f 'contexts[]=tooling'
+```
+
+Merge it once `ci` and `tooling` are green and the bot has approved, then run
+`.claude/bin/pipeline setup-repo` again, which restores all four.
 
 ---
 
@@ -85,6 +109,8 @@ accepts reviewed pull requests.
 - [ ] `./run_tests.sh` exits 0 locally and in CI (`ci` job).
 - [ ] `tooling` job is green (hook and pipeline tests).
 - [ ] `.claude/bin/gh-reviewer api user --jq .login` prints the bot.
+- [ ] In the tick's environment, `gh auth status` names a fine-grained
+      (`github_pat_…`) token.
 - [ ] `.claude/bin/pipeline run` (dry run) prints JSON with no `setup_problems`.
 - [ ] Open a test issue labelled `idea` ("add a CHANGELOG.md") and run
       `/pipeline-tick` a few times: planner → issue → lint `status:ready` →

@@ -445,6 +445,161 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(set(shipped), set(p.DEFAULT_CONFIG))
         self.assertIn("ci", shipped["required_checks"])
 
+    def test_the_pipeline_itself_is_a_control_path(self):
+        # Removing these would let an agent issue loosen the rules agents run by.
+        for path in (".github/", ".claude/"):
+            self.assertIn(path, p.load_config()["control_paths"])
+
+
+def scoped(*paths):
+    """READY_BODY with a different Files in scope."""
+    scope = "\n".join(f"- [ ] `{x}` (modify)" for x in paths)
+    head, rest = READY_BODY.split("## Files in scope", 1)
+    return head + "## Files in scope\n\n" + scope + "\n\n## Non-goals" + rest.split("## Non-goals", 1)[1]
+
+
+class ControlPathTests(unittest.TestCase):
+    def test_an_issue_touching_the_pipeline_is_never_dispatched(self):
+        plan = run([issue(5, ["agent-task"], body=scoped(".github/workflows/ci.yml", "src/a.py"))])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("#5" in w and ".github/" in w for w in plan.awaiting_human), plan.awaiting_human)
+
+    def test_a_directory_entry_that_contains_a_control_path_counts(self):
+        plan = run([issue(5, ["agent-task"], body=scoped("docs/"))])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("docs/Pipeline.md" in w for w in plan.awaiting_human), plan.awaiting_human)
+
+    def test_ordinary_scope_is_dispatched(self):
+        plan = run([issue(5, ["agent-task"], body=scoped("src/a.py", "docs/Economy.md"))])
+        self.assertEqual(kinds(plan), [("implement", 5, None)])
+
+    def test_control_paths_touched(self):
+        self.assertEqual(p.control_paths_touched(["src/a.py"]), [])
+        self.assertEqual(p.control_paths_touched([".claude/hooks/x.sh", "run_tests.sh"]),
+                         [".claude/", "run_tests.sh"])
+        # `.github/` is not `github/`: only a leading ./ or / is dropped.
+        self.assertEqual(p.control_paths_touched(["github/x.py", "claude/y.md"]), [])
+
+    def test_an_unreadable_scope_is_deferred_not_dispatched(self):
+        def broken(_body):
+            raise RuntimeError("bash not found")
+        snap = {"now": NOW, "issues": [issue(5, ["agent-task"])], "prs": [],
+                "reviewer_login": REVIEWER, "remote_branches": set()}
+        plan = p.decide(snap, broken, lint_with())
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("#5" in d for d in plan.deferred), plan.deferred)
+
+
+class PrAdmissionTests(unittest.TestCase):
+    """Which pull requests the agents may touch at all."""
+
+    def test_a_fork_pr_goes_to_the_owner(self):
+        fork = dict(pr(105, checks="failure"), crossRepo=True)
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS])], [fork])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("PR #105" in w and "fork" in w for w in plan.awaiting_human))
+        # ...and never stands in for the issue's own pull request.
+        self.assertNotIn(p.IN_REVIEW, [o.get("status") for o in ops(plan, "set-status")])
+
+    def test_a_pr_bound_to_no_issue_goes_to_the_owner(self):
+        plan = run([], [pr(105, branch="chore/tidy")])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("PR #105" in w and "no issue" in w for w in plan.awaiting_human))
+
+    def test_no_fix_pass_on_a_human_decision_issue(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.HUMAN_DECISION, p.IN_REVIEW])], [pr(105, checks="failure")])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("owner-held issue #5" in w for w in plan.awaiting_human))
+
+    def test_no_review_of_a_control_path_issue(self):
+        owner = issue(5, [p.AGENT_TASK, p.IN_REVIEW], body=scoped(".claude/settings.json"))
+        plan = run([owner], [pr(105)])
+        self.assertEqual(plan.dispatch, [])
+
+    def test_an_ordinary_agent_pr_is_still_reviewed(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_REVIEW])], [pr(105)])
+        self.assertEqual(kinds(plan), [("review", 5, 105)])
+
+
+class ProtectionTests(unittest.TestCase):
+    # These pin the rules GitHub enforces. An agent PR that "simplifies" the
+    # payload changes a test too -- and both are control paths, so a human
+    # sees it (docs/Pipeline.md § What stays with the owner).
+    def test_payload_is_pinned(self):
+        payload = p.protection_payload(4242)
+        self.assertTrue(payload["enforce_admins"])
+        self.assertTrue(payload["required_linear_history"])
+        self.assertFalse(payload["allow_force_pushes"])
+        self.assertFalse(payload["allow_deletions"])
+        reviews = payload["required_pull_request_reviews"]
+        self.assertEqual(reviews["required_approving_review_count"], 1)
+        self.assertTrue(reviews["dismiss_stale_reviews"])
+        self.assertFalse(reviews["require_last_push_approval"])
+        self.assertEqual({c["context"] for c in payload["required_status_checks"]["checks"]},
+                         set(p.REQUIRED_CHECKS))
+        self.assertEqual({c["app_id"] for c in payload["required_status_checks"]["checks"]}, {4242})
+
+    def as_github_returns_it(self, payload):
+        """The GET shape: booleans wrapped as {"enabled": x}."""
+        out = dict(payload)
+        for key in ("enforce_admins", "required_linear_history", "allow_force_pushes", "allow_deletions"):
+            out[key] = {"enabled": payload[key]}
+        return out
+
+    def test_no_drift_when_github_matches(self):
+        payload = p.protection_payload()
+        self.assertEqual(p.protection_drift(self.as_github_returns_it(payload), payload), [])
+
+    def test_drift_is_reported(self):
+        payload = p.protection_payload()
+        actual = self.as_github_returns_it(payload)
+        actual["enforce_admins"] = {"enabled": False}
+        actual["required_status_checks"] = {"checks": [{"context": "ci", "app_id": 1}]}
+        drift = p.protection_drift(actual, payload)
+        self.assertTrue(any("enforce_admins" in d for d in drift), drift)
+        self.assertTrue(any("allowlist" in d and "missing" in d for d in drift), drift)
+        self.assertTrue(any("app 1" in d for d in drift), drift)
+
+    def test_no_protection_at_all(self):
+        self.assertEqual(p.protection_drift(None, p.protection_payload()), ["no branch protection"])
+
+
+class PreflightTests(unittest.TestCase):
+    def fake_git(self, status="", branch=p.DEFAULT_BRANCH):
+        from types import SimpleNamespace
+
+        def run(args, **_):
+            out = status if "status" in args else branch + "\n"
+            return SimpleNamespace(returncode=0, stdout=out)
+        return run
+
+    def check(self, root, **git):
+        return p.preflight(root, run=self.fake_git(**git), which=lambda _: "/usr/bin/x",
+                           bash=lambda: "/bin/bash")
+
+    def test_clean_machine(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.check(Path(d)), [])
+
+    def test_local_settings_dirty_tree_and_wrong_branch_are_reported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".claude").mkdir()
+            (Path(d) / ".claude" / "settings.local.json").write_text("{}", encoding="utf-8")
+            problems = self.check(Path(d), status=" M .claude/hooks/bash_guard.sh\n", branch="feature/x")
+        self.assertEqual(len(problems), 3, problems)
+        self.assertTrue(any("settings.local.json" in x for x in problems))
+        self.assertTrue(any("bash_guard.sh" in x for x in problems))
+        self.assertTrue(any("feature/x" in x for x in problems))
+
+    def test_missing_jq_is_reported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            problems = p.preflight(Path(d), run=self.fake_git(), which=lambda _: None,
+                                   bash=lambda: "/bin/bash")
+        self.assertTrue(any("jq" in x for x in problems), problems)
+
 
 if __name__ == "__main__":
     unittest.main()

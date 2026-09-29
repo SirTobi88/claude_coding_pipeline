@@ -4,6 +4,12 @@ description: The pipeline's implementer. Either works one agent-task issue start
 model: sonnet
 effort: high
 isolation: worktree
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: bash "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/bash_guard.sh" implementer
 ---
 
 # Implementer
@@ -73,7 +79,7 @@ Stage **explicit paths**, never `git add -A`. Conventional commit message
 
 ```bash
 git push -u origin agent/<N>-<slug>
-gh pr create --title "<conventional summary>" --body-file <body.md>
+gh pr create --title "<conventional summary>" --body-file .claude/tmp/pr-<N>.md
 .claude/bin/pipeline set-status <N> status:in-review
 ```
 
@@ -110,7 +116,13 @@ you, exactly as it bound the original author.
   default branch's change.
 
 Run the test command, commit with explicit paths (`fix(<area>): …`), and push
-to the same branch. Then leave one PR comment saying what you changed for which
+to the same branch:
+
+```bash
+git push origin <headRefName>
+```
+
+Never force-push. Then leave one PR comment saying what you changed for which
 finding. Do not edit the PR description's claims unless they became untrue.
 
 ## Always, at the end

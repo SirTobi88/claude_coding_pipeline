@@ -39,21 +39,47 @@ actual:   $3"; fi
 # --- stub gh ----------------------------------------------------------------
 
 BIN="$WORK/bin"
-mkdir -p "$BIN"
+FX="$WORK/fixtures"
+mkdir -p "$BIN" "$FX"
 GH_LOG="$WORK/gh.log"
-export GH_LOG
+export GH_LOG GH_FIXTURES="$FX"
 : > "$GH_LOG"
+
+# The stub answers every call from a file under $GH_FIXTURES, so a case sets up
+# GitHub's state by writing files:
+#
+#   issue-<N>.body.md    `gh issue view N --json body --jq .body`
+#   issue-<N>.meta.json  `gh issue view N --json state,labels`
+#   pr-<N>.json          `gh pr view N --json body`
+#   prs.json             `gh pr list ...`
+#   files-<N>.json       `gh api --paginate repos/.../pulls/N/files...`
+#
+# A missing file is a failed call.
+cat > "$BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "$PWD :: $*" >> "$GH_LOG"
+fx="$GH_FIXTURES"
+case "$1 $2" in
+  "issue view")
+    case " $* " in
+      *" state,labels "*) f="$fx/issue-$3.meta.json" ;;
+      *)                  f="$fx/issue-$3.body.md" ;;
+    esac ;;
+  "pr view")        f="$fx/pr-$3.json" ;;
+  "pr list")        f="$fx/prs.json" ;;
+  "api --paginate") f="$fx/files-$(printf '%s' "$3" | sed -n 's|.*/pulls/\([0-9]*\)/files.*|\1|p').json" ;;
+  *) exit 1 ;;
+esac
+[ -f "$f" ] || exit 1
+cat "$f"
+STUB
+chmod +x "$BIN/gh"
+export PATH="$BIN:$PATH"
 
 # Issue #228 in a real issue's shape: the template's checklist items, followed
 # by prose that names OTHER files -- the exact thing the parser must not read
 # as an entry.
-cat > "$BIN/gh" <<'STUB'
-#!/usr/bin/env bash
-echo "$PWD :: $*" >> "$GH_LOG"
-case "$1 $2" in
-  "issue view")
-    case "$3" in
-      228) cat <<'BODY'
+cat > "$FX/issue-228.body.md" <<'BODY'
 ## Context
 
 Touch `Design/Systems/Simulation.md` only by reading it.
@@ -73,23 +99,13 @@ Touch `Design/Systems/Simulation.md` only by reading it.
 
 - [ ] `./run_tests.sh` exits 0
 BODY
-      ;;
-      300) cat <<'BODY'
+cat > "$FX/issue-300.body.md" <<'BODY'
 ## Files in scope
 
 Edit `src/sim/tick.gd` and `src/test/sim/test_tick.gd`.
 
 ## Non-goals
 BODY
-      ;;
-      *) exit 1 ;;
-    esac
-    ;;
-  *) exit 1 ;;
-esac
-STUB
-chmod +x "$BIN/gh"
-export PATH="$BIN:$PATH"
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required to run these tests"; exit 1; }
 
@@ -217,6 +233,187 @@ fetched_in="$(grep 'issue view' "$GH_LOG" | head -1 | sed 's/ :: .*//')"
 # /c/Users/.../Temp/x); compare them in one canonical Windows form there.
 canon() { local p; p="$(cd "$1" 2>/dev/null && pwd -P)"; if command -v cygpath >/dev/null 2>&1; then cygpath -m "$p"; else printf '%s' "$p"; fi; }
 expect_eq "guard: issue is read from the file's checkout" "$(canon "$REPO_REAL")" "$(canon "$fetched_in")"
+
+# --- bash_guard.sh -------------------------------------------------------------
+
+bguard() {  # <command> <agent_type, or "" for the main session> [role] -> exit code
+    jq -n --arg c "$1" --arg a "$2" \
+        'if $a == "" then {tool_input: {command: $c}} else {tool_input: {command: $c}, agent_type: $a} end' \
+        | bash "$HOOKS/bash_guard.sh" ${3:-} >/dev/null 2>&1
+    echo $?
+}
+R=".claude/bin/gh-reviewer pr review 5 --approve"
+expect_eq "bash guard: the reviewer agent acts as the bot"      0 "$(bguard "$R" github-pr-reviewer)"
+expect_eq "bash guard: the main session may (owner, review skill)" 0 "$(bguard "$R" "")"
+expect_eq "bash guard: an implementer may not"                  2 "$(bguard "$R" github-issue-resolver)"
+expect_eq "bash guard: any other subagent may not"              2 "$(bguard "$R" general-purpose)"
+expect_eq "bash guard: a role never may, whatever agent_type"   2 "$(bguard "$R" github-pr-reviewer implementer)"
+expect_eq "bash guard: reading the token file"                  2 "$(bguard "cat ~/.config/claude-pipeline/my-project/reviewer-token" github-issue-resolver)"
+expect_eq "bash guard: the token through the environment"       2 "$(bguard 'GH_TOKEN=$PIPELINE_REVIEWER_TOKEN gh pr review 5 --approve' github-triage)"
+expect_eq "bash guard: protection DELETE, even the main session" 2 "$(bguard "gh api -X DELETE repos/o/r/branches/main/protection" "")"
+expect_eq "bash guard: protection written with -f"              2 "$(bguard "gh api repos/o/r/branches/main/protection/enforce_admins -f x=y" "")"
+expect_eq "bash guard: protection --method=delete"              2 "$(bguard "gh api repos/o/r/branches/main/protection --method=delete" "")"
+expect_eq "bash guard: ruleset PUT"                             2 "$(bguard "gh api -XPUT repos/o/r/rulesets/7 --input r.json" "")"
+expect_eq "bash guard: reading protection is fine"              0 "$(bguard "gh api repos/o/r/branches/main/protection" "")"
+expect_eq "bash guard: implementer edits an issue"              2 "$(bguard "gh issue edit 5 --body-file x.md" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer creates an issue"            2 "$(bguard "gh issue create --title x" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer comments on its issue"       0 "$(bguard "gh issue comment 5 --body 'blocked on x'" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer escalates"                   0 "$(bguard ".claude/bin/pipeline set-status 5 status:escalated" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer reads reviews via api"       0 "$(bguard "gh api repos/o/r/pulls/5/reviews" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer GET with -F is still a read" 0 "$(bguard "gh api -X GET repos/o/r/pulls/5/comments -F per_page=100" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer writes via api"              2 "$(bguard "gh api repos/o/r/issues/5 -X PATCH -f body=x" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer merges"                      2 "$(bguard "gh pr merge 5 --squash" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer pushes its branch"           0 "$(bguard "git push -u origin agent/5-x" github-issue-resolver implementer)"
+expect_eq "bash guard: triage edits an issue"                   0 "$(bguard "gh issue edit 5 --body-file .claude/tmp/issue-5.md" github-triage triage)"
+expect_eq "bash guard: triage pushes"                           2 "$(bguard "git push origin agent/5-x" github-triage triage)"
+expect_eq "bash guard: planner merges"                          2 "$(bguard "gh pr merge 5" github-planner planner)"
+expect_eq "bash guard: an ordinary command"                     0 "$(bguard "git status" github-issue-resolver implementer)"
+expect_eq "bash guard: the scheduled tick may not act as the bot" 2 "$( export PIPELINE_TICK=1; bguard "$R" "" )"
+expect_eq "bash guard: ...but its reviewer subagent may"        0 "$( export PIPELINE_TICK=1; bguard "$R" github-pr-reviewer )"
+expect_eq "bash guard: quoted method"                           2 "$(bguard "gh api repos/o/r/branches/main/protection -X \"DELETE\"" "")"
+expect_eq "bash guard: method after a double space"             2 "$(bguard "gh api --method  PATCH repos/o/r/issues/5" github-issue-resolver implementer)"
+expect_eq "bash guard: protection through GraphQL"              2 "$(bguard "gh api graphql -f query='mutation { deleteBranchProtectionRule(input: {}) { clientMutationId } }'" "")"
+expect_eq "bash guard: setup-repo from a session"               2 "$(bguard ".claude/bin/pipeline setup-repo" "")"
+expect_eq "bash guard: implementer edits via -R"                2 "$(bguard "gh -R o/r issue edit 5 --add-label x" github-issue-resolver implementer)"
+expect_eq "bash guard: implementer edits via --repo later"      2 "$(bguard "gh issue --repo o/r edit 5" github-issue-resolver implementer)"
+expect_eq "bash guard: force push, flag last"                   2 "$(bguard "git push origin agent/5-x --force" github-issue-resolver implementer)"
+expect_eq "bash guard: force push, -f"                          2 "$(bguard "git push -f origin agent/5-x" "")"
+expect_eq "bash guard: force-with-lease, main session"          2 "$(bguard "git push --force-with-lease origin agent/5-x" "")"
+expect_eq "bash guard: + refspec"                               2 "$(bguard "git push origin +agent/5-x" github-issue-resolver implementer)"
+expect_eq "bash guard: deleting refspec"                        2 "$(bguard "git push origin :agent/5-x" "")"
+expect_eq "bash guard: --delete"                                2 "$(bguard "git push origin --delete agent/5-x" "")"
+expect_eq "bash guard: subagent pushes onto main"               2 "$(bguard "git push origin agent/5-x:main" github-issue-resolver implementer)"
+expect_eq "bash guard: subagent pushes a non-agent branch"      2 "$(bguard "git push origin chore/x" github-issue-resolver)"
+expect_eq "bash guard: reviewer pushes HEAD to the PR branch"   0 "$(bguard "git push origin HEAD:agent/5-x" github-pr-reviewer)"
+expect_eq "bash guard: a push piped through tail"               0 "$(bguard "git push -u origin agent/5-x 2>&1 | tail -3" github-issue-resolver implementer)"
+expect_eq "bash guard: the owner pushes a feature branch"       0 "$(bguard "git push -u origin chore/welle-0" "")"
+expect_eq "bash guard: triage applies human-decision"           2 "$(bguard "gh issue edit 5 --add-label human-decision" github-triage triage)"
+expect_eq "bash guard: planner files a human-decision issue"    2 "$(bguard "gh issue create --title q --label human-decision" github-planner planner)"
+expect_eq "bash guard: planner lists human-decision issues"     0 "$(bguard "gh issue list --label human-decision --state open" github-planner planner)"
+expect_eq "bash guard: the owner applies human-decision"        0 "$(bguard "gh issue edit 5 --add-label human-decision" "")"
+
+# --- lib/pr_allowlist.sh: the `allowlist` required check ------------------------
+
+# shellcheck source=../lib/pr_allowlist.sh
+. "$HOOKS/lib/pr_allowlist.sh"
+export GITHUB_REPOSITORY=o/r AGENT_LOGIN=owner
+printf '.github/\n.claude/\nrun_tests.sh\n' > "$WORK/control_paths"
+export CONTROL_PATHS_FILE="$WORK/control_paths"
+
+meta() {  # <issue> <state> [label...]
+    local n="$1" st="$2"; shift 2
+    if [ $# -eq 0 ]; then set -- ""; fi
+    printf '%s\n' "$@" | jq -R . | jq -s --arg s "$st" '{state: $s, labels: map(select(. != "") | {name: .})}' \
+        > "$FX/issue-$n.meta.json"
+}
+prbody() {  # <pr> <body> [issue GitHub links as closing...]
+    local n="$1" b="$2"; shift 2
+    printf '%s\n' "$@" | jq -R 'select(. != "") | {number: tonumber}' | jq -s --arg b "$b" \
+        '{body: $b, closingIssuesReferences: .}' > "$FX/pr-$n.json"
+}
+files() {  # <pr> <path>... ; "old->new" is a rename
+    local n="$1"; shift
+    printf '%s\n' "$@" \
+        | jq -R 'split("->") | if length == 2 then {filename: .[1], previous_filename: .[0]} else {filename: .[0]} end' \
+        | jq -s . > "$FX/files-$n.json"
+}
+openprs() {  # "<number> <head ref> [fork] [closes-issue]"...
+    printf '%s\n' "$@" | jq -R 'split(" ") | {number: (.[0] | tonumber), headRefName: .[1],
+        isCrossRepository: (.[2] == "fork"),
+        closingIssuesReferences: (if (.[3] // "") != "" then [{number: (.[3] | tonumber)}] else [] end)}' \
+        | jq -s . > "$FX/prs.json"
+}
+check() {  # <pr> <branch> <author> [head repo] -> exit code
+    ( PR="$1" BRANCH="$2" AUTHOR="$3" HEAD_REPO="${4:-o/r}" pr_allowlist_check >/dev/null 2>&1 ); echo $?
+}
+
+meta 228 OPEN agent-task status:in-progress
+prbody 501 "Adds the market.
+
+Closes #228"
+openprs "501 agent/228-market"
+files 501 src/sim/town_market.gd src/test/sim/test_market.gd
+expect_eq "allowlist: in scope"                               0 "$(check 501 agent/228-market owner)"
+files 501 src/sim/town_market.gd src/sim/other.gd
+expect_eq "allowlist: a file out of scope"                    1 "$(check 501 agent/228-market owner)"
+files 501 "src/sim/secret.gd->src/sim/plain.gd"
+expect_eq "allowlist: renamed from out of scope"              1 "$(check 501 agent/228-market owner)"
+echo '[]' > "$FX/files-501.json"
+expect_eq "allowlist: an empty diff"                          1 "$(check 501 agent/228-market owner)"
+files 501 src/sim/town_market.gd
+prbody 501 "Adds the market."
+expect_eq "allowlist: body does not close the branch's issue" 1 "$(check 501 agent/228-market owner)"
+prbody 501 "Closes #228, fixes #229"
+expect_eq "allowlist: body closes a second issue"             1 "$(check 501 agent/228-market owner)"
+prbody 501 "Prefixes #229 differently. Closes #228"
+expect_eq "allowlist: 'prefixes #N' is not a closing keyword" 0 "$(check 501 agent/228-market owner)"
+prbody 501 "Closes #228"
+meta 228 CLOSED agent-task status:in-review
+expect_eq "allowlist: a closed issue's scope is not borrowed" 1 "$(check 501 agent/228-market owner)"
+meta 228 OPEN agent-task status:ready
+expect_eq "allowlist: an issue nobody claimed"                1 "$(check 501 agent/228-market owner)"
+meta 228 OPEN status:in-progress
+expect_eq "allowlist: not an agent-task issue"                1 "$(check 501 agent/228-market owner)"
+meta 228 OPEN agent-task status:escalated
+expect_eq "allowlist: an escalated issue is still in flight"  0 "$(check 501 agent/228-market owner)"
+openprs "501 agent/228-market" "502 agent/228-again"
+expect_eq "allowlist: a second open PR for the issue"         1 "$(check 501 agent/228-market owner)"
+openprs "501 agent/228-market" "502 chore/other - 228"
+expect_eq "allowlist: a second PR that closes the issue"      1 "$(check 501 agent/228-market owner)"
+openprs "501 agent/228-market" "900 agent/228-market fork"
+expect_eq "allowlist: a fork's same-named branch does not count" 0 "$(check 501 agent/228-market owner)"
+expect_eq "allowlist: a fork's agent/<N>- head is refused"   1 "$(check 900 agent/228-market mallory evil/r)"
+openprs "501 agent/228-market"
+prbody 501 "Closes #228" 228 229
+expect_eq "allowlist: GitHub links a second closing issue"    1 "$(check 501 agent/228-market owner)"
+prbody 501 "Closes #228"
+rm -f "$FX/prs.json"
+expect_eq "allowlist: open PRs cannot be listed"              1 "$(check 501 agent/228-market owner)"
+openprs "501 agent/228-market"
+( CONTROL_PATHS_FILE="$WORK/no-such-file"; PR=501 BRANCH=agent/228-market AUTHOR=owner pr_allowlist_check >/dev/null 2>&1 )
+expect_eq "allowlist: no control-path list"                   1 "$?"
+
+# Bound through the body, not the branch.
+meta 228 OPEN agent-task status:in-progress
+prbody 505 "Closes #228"
+files 505 src/sim/town_market.gd
+openprs "505 chore/market"
+expect_eq "allowlist: agents' account, body-bound, in flight" 0 "$(check 505 chore/market owner)"
+meta 228 OPEN agent-task status:ready
+expect_eq "allowlist: agents' account, body-bound, unclaimed" 1 "$(check 505 chore/market owner)"
+meta 228 OPEN status:ready human-decision
+expect_eq "allowlist: agents' account borrows an owner issue" 1 "$(check 505 chore/market owner)"
+expect_eq "allowlist: a collaborator may close an owner issue" 0 "$(check 505 chore/market alice)"
+meta 228 OPEN agent-task status:in-progress
+openprs "501 agent/228-market"
+
+prbody 503 "Tidy the README."
+files 503 README.md
+expect_eq "allowlist: unbound, by the agents' account"        1 "$(check 503 chore/tidy owner)"
+expect_eq "allowlist: unbound, login differs only in case"    1 "$(check 503 chore/tidy Owner)"
+expect_eq "allowlist: unbound, by someone else"               0 "$(check 503 dependabot/npm/x 'dependabot[bot]')"
+files 503 README.md .github/workflows/ci.yml
+expect_eq "allowlist: unbound, someone else, a control path"  1 "$(check 503 dependabot/actions/x 'dependabot[bot]')"
+expect_eq "allowlist: unbound fork PR, a control path"        1 "$(check 503 patch-1 mallory evil/r)"
+
+cat > "$FX/issue-240.body.md" <<'BODY'
+## Files in scope
+
+- [ ] `.github/workflows/ci.yml` (modify)
+- [ ] `src/app.py` (modify)
+BODY
+meta 240 OPEN agent-task status:in-review
+prbody 504 "Closes #240"
+openprs "504 agent/240-ci"
+files 504 .github/workflows/ci.yml src/app.py
+expect_eq "allowlist: control path without human-decision"  1 "$(check 504 agent/240-ci owner)"
+meta 240 OPEN agent-task status:in-review human-decision
+expect_eq "allowlist: control path with human-decision"     0 "$(check 504 agent/240-ci owner)"
+meta 240 OPEN agent-task status:in-review
+files 504 src/app.py
+expect_eq "allowlist: no control path touched"              0 "$(check 504 agent/240-ci owner)"
+rm -f "$FX/issue-240.meta.json"
+expect_eq "allowlist: the issue cannot be read"             1 "$(check 504 agent/240-ci owner)"
 
 # --- result -------------------------------------------------------------------
 

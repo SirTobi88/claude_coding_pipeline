@@ -109,11 +109,23 @@ branch. Branch protection (applied by `pipeline setup-repo`):
 
 - **Required checks**, pinned to GitHub Actions so a hand-posted commit status
   cannot stand in for them (`required_checks`, default `ci`, `tooling`,
-  `allowlist`, `contract`).
+  `allowlist`, `contract`). `allowlist` and `contract` run on
+  `pull_request_target`: GitHub takes their workflow file and checkout from the
+  default branch, so a pull request cannot rewrite the checks that judge it.
+  `ci` and `tooling` must run the pull request's code, so they run its
+  workflow file too — which is why the agents' token has no Workflows
+  permission (§ Setup): an agent cannot push a workflow file, including a new
+  one whose job borrows a required check's name. That limits the agents, not
+  outsiders: a fork's pull request could carry such a workflow, so `setup-repo`
+  holds outside contributors' workflow runs for approval, `allowlist` refuses
+  any unbound pull request that touches a pipeline control path, and the tick
+  hands every fork's pull request to the owner instead of the reviewer.
 - **One approving review** from someone other than the author. Every agent
   pushes as the owner's account, so **only the reviewer bot's approval counts**
   — this is what makes "never judge your own work" a platform rule rather than a
-  sentence in a doc.
+  sentence in a doc. The same holds for any other collaborator with write
+  access: their approval merges too, so give write access to nobody whose
+  approval should not.
 - **Stale approvals are dismissed** when new commits land, so an approval is
   always an approval of the code that merges.
 - **Admins are included.** Agents run as the owner, an admin; without this the
@@ -126,6 +138,33 @@ The reviewer approves the exact commit it reviewed (the review carries its
 `commit_id`) and enables auto-merge; GitHub merges when the last required check
 goes green.
 
+### What binds an agent, and what only guides it
+
+Every agent runs on the owner's machine, so anything the machine's credentials
+can do, an agent can try. The rules above hold because of the credentials, not
+because agents follow instructions:
+
+| Layer | What it stops | Holds against a determined agent? |
+|---|---|---|
+| Branch protection, admins included | unreviewed, red or directly pushed code on the default branch | yes |
+| The agents' token: this repository only, no Administration, no Workflows (§ Setup, step 2) | changing protection or settings; pushing a workflow file | yes — **if** the pipeline's OS user holds no other GitHub credential. With the token in `GH_TOKEN` on your own account, your own login stays in the keyring, one command away |
+| The `allowlist` check: bound issue, Files in scope, control paths only under `human-decision` | out-of-scope diffs; agents editing the pipeline's own files | the scope rules, yes. The control-path rule rests on a label, and the agents' token may label issues — against a determined agent it is a guard rail |
+| The bot's token | an agent approving its own work | no — every agent runs as the same OS user and can read the file. What holds is that the bot is a separate account; what keeps agents from using it is the next row |
+| `.claude/hooks/bash_guard.sh`, `allowlist_guard.sh` | acting as the bot outside the reviewer, editing branch protection, force pushes, an implementer editing its own issue, a subagent applying `human-decision`, out-of-scope edits | no — they read command text and catch the accident, not the workaround (`docs/LESSONS.md` § Merging) |
+| `.claude/settings.json`, `dontAsk` mode | any command no allow rule names, and the denied ones | no — rules match text |
+| Agent prompts | everything else | no |
+
+The bash guard lets only the `github-pr-reviewer` subagent use
+`.claude/bin/gh-reviewer`, plus a main session that is not the scheduled tick —
+the owner running the review skill by hand. The tick's session is recognised by
+`PIPELINE_TICK=1` in its environment (§ Setup, step 5). `gh-reviewer` itself
+runs only the calls a review needs.
+
+Making the bot's token a boundary needs a different shape: reviews run as a
+separately scheduled session under a second OS user that alone can read the
+token, and the main tick only marks pull requests ready for review. The
+template does not do that yet.
+
 ---
 
 ## The tick
@@ -135,6 +174,10 @@ goes green.
 1. `.claude/bin/pipeline run --apply` — surveys GitHub, applies bookkeeping
    (lint results, stale claims, exhausted fix rounds, missing auto-merge),
    **claims** each work item by label, and prints the dispatch list as JSON.
+   Its `setup_problems` also name what is wrong with the machine the tick runs
+   on and that no pull request would show: a `.claude/settings.local.json`,
+   uncommitted changes in the tick's checkout, a checkout not on the default
+   branch, a missing `jq` or bash.
 2. Spawns one agent per dispatch item, in parallel, and waits for them.
 3. Reports: what was dispatched, what came back, and everything waiting on the
    owner.
@@ -146,8 +189,8 @@ tick, and two issues whose **Files in scope** overlap are never in flight
 together.
 
 `.claude/bin/pipeline run` without `--apply` is a dry run: it prints what a tick
-would do and changes nothing. Schedule the real tick with the Claude desktop
-app's scheduled tasks or `/loop 30m /pipeline-tick`.
+would do and changes nothing. How to schedule the real tick, and in which
+permission mode, is § Setup step 5.
 
 ---
 
@@ -156,26 +199,56 @@ app's scheduled tasks or `/loop 30m /pipeline-tick`.
 One time, in this order. `docs/ADOPTING.md` walks through it for an existing
 project.
 
-**1. Tools on the machine that runs the tick.** `gh` (authenticated as the
-owner), `jq`, Python ≥ 3.9, bash, and the project's own toolchain. See
+**1. Tools on the machine that runs the tick.** `gh` (authenticated with the
+agents' token, step 2), `jq`, Python ≥ 3.9, bash, and the project's own toolchain. See
 `docs/AgentEnvironment.md`. After installing, **fully quit and reopen** the
 Claude app — a running app keeps its old `PATH`.
 
-**2. The reviewer bot account.** A second GitHub account that only the reviewer
+**2. The agents' token.** The agents must not hold the owner's full
+credentials: with them, any agent could remove branch protection, and every
+other rule here would be advice.
+
+- Signed in as the owner, create a **fine-grained** personal access token.
+  Repository access: **only this repository**. Permissions: Contents,
+  Issues and Pull requests read and write; Actions, Checks and Commit statuses
+  read. **No Administration, no Workflows.** Set an expiry, and a reminder to
+  renew it.
+- Make it the only credential the tick and its agents see: a separate OS user
+  for the pipeline, logged in with `gh auth login --with-token < token-file`
+  and `gh auth setup-git` (so `git push` uses it too), with no other GitHub
+  login, SSH key or credential-manager entry. Only then does this step bind.
+  Setting it as `GH_TOKEN` for the scheduled task on your own account keeps
+  the agents' own commands on the token, but your full login stays in the
+  keyring, and anything an agent runs can reach it — a guard rail, not a
+  boundary (§ Merging).
+- Check, in the tick's environment: `gh auth status` names a fine-grained token
+  (`github_pat_…`) and nothing else.
+- The agents cannot push a change to `.github/workflows/`, and a pull request
+  whose branch must absorb one (a conflict pass after a workflow change on the
+  default branch) is rejected on push. That escalates; you update the branch
+  with your own login (`gh pr update-branch <N>`).
+- `setup-repo` (step 4) needs Administration, so run it with your own login,
+  not this token.
+
+**3. The reviewer bot account.** A second GitHub account that only the reviewer
 agent acts as (GitHub's terms allow one machine account per person).
 
 - Create a free account (e.g. `<owner>-bot`) in a private browser window, with
   its own e-mail (Gmail `you+bot@gmail.com` works). Turn on 2FA.
 - Signed in as the bot, create a **classic** personal access token with the
-  `repo` scope. Classic, because a fine-grained token cannot be scoped to a
-  repository the account has not yet been invited to.
+  `repo` scope and an expiry. Classic, because a fine-grained token cannot be
+  scoped to a repository the account has not yet been invited to. The `repo`
+  scope reaches every repository the bot can see, so use this bot for this
+  repository only. An expired token stops every approval: renew it before the
+  date.
 - Save it, and nothing else, to the path in `reviewer_token_file`
   (`.claude/bin/pipeline config reviewer_token_file` prints it). Never commit
   it or paste it into a chat. On Windows, Notepad appends `.txt` — rename it.
 - Check: `.claude/bin/gh-reviewer api user --jq .login` prints the bot's login.
+  The wrapper runs only the calls a review needs (§ Merging).
 
-**3. Apply the repository settings** (needs a repository plan with branch
-protection: public, or GitHub Pro/Team for private):
+**4. Apply the repository settings** (needs a repository plan with branch
+protection: public, or GitHub Pro/Team for private), with your own login:
 
 ```bash
 .claude/bin/pipeline setup-repo --dry-run   # shows every call it would make
@@ -183,20 +256,63 @@ protection: public, or GitHub Pro/Team for private):
 ```
 
 It creates the labels, turns on auto-merge and branch deletion, allows squash
-merges only, protects the default branch as described above, and invites the
-bot as a collaborator with write access, accepting with its token. Idempotent.
-**After this, nobody can push to the default branch directly** — including you.
+merges only, makes the Actions token read-only and unable to approve pull
+requests, holds workflow runs from outside contributors' forks for approval,
+protects the default branch as described above, reads the protection back and
+prints a `DRIFT` line for anything GitHub did not take, and invites the bot as
+a collaborator with write access, accepting with its token only that
+repository's invitation. Idempotent. **After this, nobody can push to the
+default branch directly** — including you. The bash guard refuses `setup-repo`
+from a Claude session; run it in a terminal.
 
-**4. Try one tick by hand**, then schedule it.
+**5. Schedule the tick in `dontAsk` mode.** Unattended, a permission prompt is
+a hang: nobody answers it, and every claimed item waits out its staleness
+timer. In `dontAsk` mode a command that no allow rule in `.claude/settings.json`
+names is refused instead, and the agent carries on or escalates.
+
+- Preferred: a fresh session per tick from the OS scheduler (Task Scheduler,
+  cron), run as the pipeline's OS user (step 2):
+  `PIPELINE_TICK=1 claude -p "/pipeline-tick" --permission-mode dontAsk`.
+  `PIPELINE_TICK=1` tells the bash guard this main session is the tick, which
+  never acts as the reviewer bot itself.
+- A Claude desktop scheduled task uses the default mode of the settings it
+  starts with. For the pipeline's OS user, set
+  `"permissions": {"defaultMode": "dontAsk"}` in its user settings and
+  `PIPELINE_TICK=1` in its environment.
+- `/loop 30m /pipeline-tick` keeps one conversation for weeks, so each tick pays
+  for the ones before it. Use it only while you watch.
+- Not `bypassPermissions`: it switches the allow list off, and only the hooks
+  remain (§ Merging).
+
+Run one tick by hand in that mode first. A refused command shows in the report.
+`.claude/pipeline/tests/test_settings.py` checks a hand-kept list of the
+commands the prompts use against the allow and deny rules; when a prompt starts
+using a new command, add it there and to the rules together.
 
 ---
 
 ## What stays with the owner
 
-The pipeline stops and labels `status:needs-human` rather than guessing when:
+The pipeline stops rather than guessing, and lists the item under *Needs you*
+in the tick's report — labelling it `status:needs-human` where it would
+otherwise move on — when:
 
 - an issue carries `human-decision`, or work would contradict a design doc or a
   locked decision;
+- an issue's **Files in scope** touches a pipeline control path
+  (`control_paths` in `.claude/pipeline/config.json`: `.github/`, `.claude/`,
+  `run_tests.sh`, `CLAUDE.md`, `CONTRIBUTING-agents.md`, `docs/Pipeline.md`).
+  These files decide what agents may do; an agent that may edit them can
+  loosen them. The tick never dispatches such an issue, nor a fix pass or a
+  review on its pull request. You work it yourself (the `github-issue-fetch`
+  skill), label it `human-decision` — the `allowlist` check accepts a change to
+  a control path only for an issue with that label, and the bash guard refuses
+  that label to every agent — and review the pull request yourself with the
+  `github-pr-review` skill;
+- a pull request comes from a fork, or is bound to no issue. The agents
+  neither review nor fix it. A pull request from the agents' account — on a
+  personal repository, that is also yours — must be bound to an issue, or
+  `allowlist` fails it;
 - an asset must be produced (`asset` issues are never auto-assigned);
 - triage has already answered once, or a PR has used all its fix passes;
 - the roadmap's next step is behind a human gate. The planner says so in one

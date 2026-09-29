@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # `gh`, acting as the reviewer bot account instead of the owner.
 #
-#   .claude/bin/gh-reviewer pr review 123 --approve --body-file report.md
+#   .claude/bin/gh-reviewer pr review 123 --approve --body-file .claude/tmp/review-123.md
 #
 # Branch protection requires one approving review from someone who is not the
 # PR's author. Every implementer pushes as the owner's account, so the only
 # approval that can count is the bot's -- and only the reviewer agent uses this
-# wrapper. That is what turns "never approve your own work" from a rule into
-# something GitHub enforces. docs/Pipeline.md § Merging.
+# wrapper (.claude/hooks/bash_guard.sh refuses it to every other agent). That
+# is what turns "never approve your own work" from a rule into something
+# GitHub enforces. docs/Pipeline.md § Merging.
+#
+# It runs only the calls the review procedure makes
+# (.claude/skills/github-pr-review/SKILL.md): the token is the one thing that
+# makes an approval count, and it should be able to do nothing else -- not
+# `auth token`, not `repo delete`, not an arbitrary API call.
 #
 # The token comes from $PIPELINE_REVIEWER_TOKEN, or from the file named by
 # $PIPELINE_REVIEWER_TOKEN_FILE, or from `reviewer_token_file` in
@@ -15,6 +21,24 @@
 # never printed, passed on a command line, or written anywhere.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+allowed=0
+case "${1:-} ${2:-}" in
+    "pr review"|"pr merge"|"pr edit"|"pr view"|"pr checks"|"pr comment") allowed=1 ;;
+    "api user") allowed=1 ;;
+    "api "*)
+        # Submitting a review, pinned to a commit. The endpoint must come first.
+        case "${2#/}" in
+            repos/*/pulls/[0-9]*/reviews|repos/*/pulls/[0-9]*/reviews\?*) allowed=1 ;;
+        esac ;;
+esac
+if [ "$allowed" = 0 ]; then
+    echo "gh-reviewer: refusing 'gh ${1:-} ${2:-} ...' as the reviewer bot." >&2
+    echo "It runs only: pr review|merge|edit|view|checks|comment, api user," >&2
+    echo "and api repos/<owner>/<repo>/pulls/<N>/reviews. Use plain gh for anything else." >&2
+    exit 4
+fi
+
 if [ -n "${PIPELINE_REVIEWER_TOKEN:-}" ]; then
     token="$PIPELINE_REVIEWER_TOKEN"
 else

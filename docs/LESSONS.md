@@ -70,6 +70,31 @@ they judged, and an approval of an older commit means "review again".
 default branch after the initial setup, one of them a feature implementation.
 Protection with admins included ended that.
 
+The next three were found auditing this template, not paid for in the project
+it came from — they are the gaps the rules above left open.
+
+**Protection binds only those who cannot change it.** The agents ran with the
+owner's full `gh` login, an admin's, and `gh api` was pre-approved. Any agent
+could have deleted the protection it was judged by. The agents now get a token
+without Administration or Workflows permission; the owner's login is for
+`setup-repo`.
+
+**A required check is only as trusted as the workflow that runs it.** Under
+`pull_request`, GitHub runs the workflow file from the pull request, so a PR
+could rewrite `allowlist` to `exit 0` — judging it with the base branch's parser
+did not help when the job's own steps came from the PR. `allowlist` and
+`contract` read no PR code, so they moved to `pull_request_target`, which runs
+the default branch's workflow. `ci` has to run the PR's code; the token without
+Workflows permission is what keeps an agent from editing it.
+
+**A wrapper everyone may call is not an identity.** "Only the reviewer acts as
+the bot" was a sentence in the reviewer's prompt, while every agent was
+allowed to run `.claude/bin/gh-reviewer`. `bash_guard.sh` now refuses it to
+every other agent and to the tick itself. That is a guard rail: every agent
+runs as the same OS user and could read the token file. A boundary needs the
+reviews in a separate session under a user that alone can read it
+(`docs/Pipeline.md` § *What binds an agent*).
+
 ---
 
 ## Issues
@@ -108,8 +133,9 @@ was allowed to touch.
 files in prose ("that file belongs to #12"). Sweeping every backticked token
 allowlisted exactly the files an issue said were someone else's.
 
-**CI judges a PR with the base branch's parser.** Otherwise a PR could loosen
-the rule that judges it.
+**CI judges a PR with the default branch's workflow and code.** Otherwise a PR
+could loosen the rule that judges it. Using the base branch's parser was not
+enough while the job's own steps still came from the PR (§ Merging).
 
 **Generated companions are covered by their source.** In Godot every script has
 a generated `.uid` and every asset a generated `.import`; until the parser knew

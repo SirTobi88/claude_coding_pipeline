@@ -82,10 +82,11 @@ and roadmap steps marked as human gates. The kill switch is one label:
 2. **Fit it to the project** — `.claude/pipeline/config.json`, `run_tests.sh`,
    the `ci` job, *Project rules* in `CONTRIBUTING-agents.md`, `CLAUDE.md`,
    `docs/ROADMAP.md` (`docs/ADOPTING.md` § C).
-3. **Set up once** — tools, a reviewer bot account and token, then
-   `.claude/bin/pipeline setup-repo` (`docs/Pipeline.md` § *Setup*).
-4. **Run a tick** — `/pipeline-tick` by hand, then schedule it (desktop app
-   scheduled task, or `/loop 30m /pipeline-tick`).
+3. **Set up once** — tools, a restricted token for the agents, a reviewer bot
+   account and token, then `.claude/bin/pipeline setup-repo`
+   (`docs/Pipeline.md` § *Setup*).
+4. **Run a tick** — `/pipeline-tick` by hand in `dontAsk` mode, then schedule
+   it (a fresh `claude -p` session per tick, or a desktop app scheduled task).
 5. **Feed it** — open an issue labelled `idea` with one line of what you want.
 
 ## Requirements
@@ -95,7 +96,10 @@ and roadmap steps marked as human gates. The kill switch is one label:
 - GitHub with **branch protection** available: a public repository, or GitHub
   Pro/Team for a private one.
 - A second GitHub account for the reviewer bot.
-- On the machine running the tick: `gh` (authenticated as the owner), `jq`,
+- A fine-grained token for the agents: this repository only, no Administration
+  and no Workflows permission. The platform rules hold because the agents
+  cannot change them (`docs/Pipeline.md` § *What binds an agent*).
+- On the machine running the tick: `gh` (authenticated with that token), `jq`,
   Python ≥ 3.9, bash (Git Bash on Windows), and the project's toolchain.
 
 ---
@@ -107,7 +111,8 @@ and roadmap steps marked as human gates. The kill switch is one label:
   agents/        planner, implementer (resolver), reviewer, triage
   commands/      pipeline-tick.md — the dispatcher
   skills/        github-pr-review, github-issue-create, interactive helpers
-  hooks/         allowlist_guard.sh + lib/issue_scope.sh (the one parser) + tests
+  hooks/         allowlist_guard.sh, bash_guard.sh, lib/issue_scope.sh (the one
+                 parser), lib/pr_allowlist.sh (the allowlist check) + tests
   bin/           pipeline (Python shim), gh-reviewer (gh as the bot)
   pipeline/      pipeline.py, config.json, tests/
   settings.json  hook registration, permissions for unattended runs
