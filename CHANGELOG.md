@@ -86,13 +86,20 @@ to answer.
 - The review skill now writes the reviewed commit SHA literally instead of
   through a shell variable that did not survive between calls, so the
   head-commit check no longer always failed.
-- The bash guard now normalizes `git -C <dir>` before matching push and
-  setup-repo rules, so a command routed through `git -C` can no longer bypass
-  them.
+- The bash guard now normalizes `git -C <dir>`, so a push routed through it
+  meets the push rules, and refuses setup-repo where it is called rather than
+  wherever its name appears.
 
 ## [Wave 1] - 2026-09-29
 
 Commit `594f3cd` — give every state a next owner (the state machine).
+
+### Added
+- A red default branch now opens one `pipeline:main-red` issue and holds
+  ci-failed fixes and new implementations until it is green again.
+- Fix passes and conflict passes are now capped per PR and review attempts
+  per PR head, and a PR stuck past a cap goes to the owner instead of
+  retrying indefinitely.
 
 ### Changed
 - `decide()` now moves a PR only while its issue allows it, holding it
@@ -103,13 +110,6 @@ Commit `594f3cd` — give every state a next owner (the state machine).
 - Only the required checks now gate a PR: a missing required check is
   pending, an optional check's failure is ignored, and only a check's latest
   run counts.
-
-### Added
-- A red default branch now opens one `pipeline:main-red` issue and holds
-  ci-failed fixes and new implementations until it is green again.
-- Fix passes, conflict passes, and review attempts are now capped per PR
-  head, and a PR stuck past the cap goes to the owner instead of retrying
-  indefinitely.
 
 ## [Wave 0] - 2026-09-28
 
@@ -122,9 +122,9 @@ Commit `992f60a` — close the agents' trust boundary and judge PRs from main.
 - Agents acting through the owner's admin login no longer have `gh api`
   broadly pre-approved; pushes, edits, and API calls are narrowed to the rules
   an agent actually needs.
-- The required checks now run from the default branch's own workflow files
-  instead of the PR's copy, so a PR can no longer rewrite `allowlist` to
-  pass.
+- The `allowlist` and `contract` checks now run from the default branch's own
+  workflow file instead of the PR's copy, so a PR can no longer rewrite
+  `allowlist` to pass.
 - A pipeline run now reports local state that no PR shows, such as a dirty or
   off-branch checkout, leftover `settings.local.json`, or a missing `jq` or
   `bash`.
