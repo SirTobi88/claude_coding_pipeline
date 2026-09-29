@@ -18,7 +18,9 @@ It first fast-forwards this checkout to the default branch on GitHub (when the
 checkout is clean and on it), then surveys, and prints JSON. If the command fails (no `gh`, not authenticated, network),
 report the error verbatim in one line and stop — do not retry more than once.
 
-- `"paused": true` → report "paused (`pipeline:pause`)" and stop.
+- `"paused": true` → report "paused: <pause_reason>", then everything in
+  `awaiting_human`, and stop. A paused tick still turns off auto-merge on open
+  PRs and still lists what needs the owner.
 - `setup_problems` → report them first; still dispatch whatever is listed.
 - `dispatch` empty → skip § 2 and go straight to § 3.
 
@@ -49,6 +51,12 @@ without having spent anything:
 | `triage`, `plan` with `issue` | `.claude/bin/pipeline release issue <issue>` |
 | `plan` with `tracking` | `gh issue close <tracking> --comment "planner not available"` |
 
+**When every agent has returned**, run § 1 again: agents finish at different
+times, and a PR that turned green or got its verdict while you waited should not
+wait for the next scheduled tick. Spawn what it dispatches and wait again. Stop
+when it dispatches nothing, and after three rounds in any case -- the next tick
+picks up the rest.
+
 **An agent returned an error or stopped without saying what it did:** release
 only the hold — `.claude/bin/pipeline release pr <pr>` for review and fix,
 `release issue <issue>` for triage and plan — and never refund a round: the
@@ -62,5 +70,6 @@ A short block, nothing else:
 - **Waiting / in flight / deferred** — counts, with numbers.
 - **Needs you** — every `awaiting_human` entry. This is the only list the owner has to act on.
 - Any `FAILED` or `SKIPPED` line from `ops_done` or `claims`, verbatim.
+- If `status_issue` is a number, one line linking it; if it starts with `FAILED`, that line verbatim.
 
 If nothing was dispatched and nothing needs the owner, one line: "Pipeline idle."

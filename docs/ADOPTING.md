@@ -106,6 +106,9 @@ Merge it once `ci` and `tooling` are green and the bot has approved, then run
 
 ## E. First run checklist
 
+`.claude/bin/pipeline doctor` checks most of this in one go; it exits 0 when
+nothing fails.
+
 - [ ] `./run_tests.sh` exits 0 locally and in CI (`ci` job).
 - [ ] `tooling` job is green (hook and pipeline tests).
 - [ ] `.claude/bin/gh-reviewer api user --jq .login` prints the bot.

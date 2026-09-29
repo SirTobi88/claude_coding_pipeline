@@ -29,6 +29,8 @@
       "Bash(.claude/bin/pipeline claim *)",
       "Bash(.claude/bin/pipeline lint *)",
       "Bash(.claude/bin/pipeline config *)",
+      "Bash(.claude/bin/pipeline doctor)",
+      "Bash(.claude/bin/pipeline stats *)",
       "Bash(.claude/bin/gh-reviewer *)",
       "Bash(gh issue *)",
       "Bash(gh pr *)",

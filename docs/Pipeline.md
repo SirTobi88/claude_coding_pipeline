@@ -158,7 +158,8 @@ is where that surfaces.
 | `pipeline:human-holds` | The owner works this issue by hand (`pipeline claim issue N --interactive`). Never reset, never sent a fix pass. `pipeline release issue N --hold` hands it back. |
 | `pipeline:planning` | The roadmap planner is running. It closes this issue when done; the tick closes it after `stale_working_hours`. |
 | `pipeline:main-red` | The default branch is red. Opened and closed by the tick. |
-| `pipeline:pause` | On **any** open issue: every tick does nothing. The kill switch — open an issue with it from your phone. |
+| `pipeline:status` | The pipeline's heartbeat issue. Every tick rewrites its body (§ The tick). |
+| `pipeline:pause` | On **any** open issue: the tick starts nothing and turns off auto-merge on every open PR (§ The tick). The kill switch — open an issue with it from your phone. |
 | `pipeline:idle` | The planner found nothing it may plan without a human. Roadmap planning stops until you close this issue; the tick lists it under *Needs you*. |
 | `attempt-1` | An implementer ended once on this issue without a PR or an escalation. |
 | `idea` | Raw input for the planner. Any one-liner is enough. |
@@ -274,6 +275,7 @@ already running as well as those this tick starts:
 | `max_comment_only_reviews` | 2 | comment-only reviews at one head |
 | `stale_in_progress_hours`, `stale_working_hours` | 6, 4 | when a claim counts as abandoned |
 | `stale_waiting_hours` | 12 | CI that never finishes; an approval that never merges |
+| `max_agent_runs_per_day` | 50 | agents all ticks start in 24 hours together, counted in the tick log; 0 turns it off |
 
 One planner runs at a time — an idea, or the roadmap through its
 `pipeline:planning` issue — and two issues whose **Files in scope** overlap are
@@ -283,6 +285,37 @@ edits the same files.
 `.claude/bin/pipeline run` without `--apply` is a dry run: it prints what a tick
 would do and changes nothing. How to schedule the real tick, and in which
 permission mode, is § Setup step 5.
+
+When the agents a tick started have all returned, the tick surveys again —
+at most three rounds — so a PR that turned green meanwhile does not wait half
+an hour for its review.
+
+### Holding, pausing, stopping
+
+| What | How | What stops |
+|---|---|---|
+| **Hold** | automatic, while branch protection on the default branch is missing or differs from what `setup-repo` sets (`require_protection`, default true) | everything the pause stops; the fix is `setup-repo` in a terminal |
+| **Pause** | `pipeline:pause` on any open issue — or, where no agent can reach it, the file `pipeline/pause` in the git directory (`touch "$(git rev-parse --git-common-dir)/pipeline/pause"`) | new agents, bookkeeping, and auto-merge: the tick turns it off on every open PR, and turns it back on for approved PRs once unpaused. *Needs you* is still reported |
+| **Stop** | quit the Claude app, or end the `claude` processes | the agents already running — a pause does not reach them |
+
+### What the tick leaves behind
+
+- **The tick log**, one JSON line per `run --apply` in
+  `<git dir>/pipeline/ticks.jsonl`: what was dispatched, what failed, whether it
+  was paused. In no branch and no PR; shared by every worktree. It counts the
+  daily budget.
+- **The status issue** (`pipeline:status`), rewritten every tick: when the last
+  tick ran, *Needs you*, what was dispatched, setup problems, and seven days of
+  counts. Pin it; if its time is old, no tick is running.
+- **`pipeline stats [--days N]`** — merged PRs, time from PR to merge and from
+  issue to close, how many needed a fix pass or were a spec defect, how many
+  issues went to triage, and agent runs by kind. The signals `docs/LESSONS.md`
+  learned to count.
+- **`pipeline doctor`** — every part of the setup, one line each: tools, the
+  login the tick uses, the bot's token and access, repository settings, branch
+  protection, the Actions token, labels, that each required check exists as a
+  workflow job, the allow rule for the test command, the checkout, worktrees,
+  and config typos. Exit 1 while anything fails.
 
 ---
 
@@ -303,8 +336,10 @@ other rule here would be advice.
 - Signed in as the owner, create a **fine-grained** personal access token.
   Repository access: **only this repository**. Permissions: Contents,
   Issues, Pull requests, Actions (to re-run a failed check) and Commit
-  statuses (to count review attempts) read and write; Checks read. **No
-  Administration, no Workflows.** Set an expiry, and a reminder to renew it.
+  statuses (to count review attempts) read and write; Checks read;
+  Administration **read-only**, so each tick can check branch protection is
+  still on. **No Administration write, no Workflows.** Set an expiry, and a
+  reminder to renew it.
 - Make it the only credential the tick and its agents see: a separate OS user
   for the pipeline, logged in with `gh auth login --with-token < token-file`
   and `gh auth setup-git` (so `git push` uses it too), with no other GitHub
@@ -376,7 +411,8 @@ names is refused instead, and the agent carries on or escalates.
 - Not `bypassPermissions`: it switches the allow list off, and only the hooks
   remain (§ Merging).
 
-Run one tick by hand in that mode first. A refused command shows in the report.
+Run `.claude/bin/pipeline doctor` first, then one tick by hand in that mode. A
+refused command shows in the report.
 `.claude/pipeline/tests/test_settings.py` checks a hand-kept list of the
 commands the prompts use against the allow and deny rules; when a prompt starts
 using a new command, add it there and to the rules together.
