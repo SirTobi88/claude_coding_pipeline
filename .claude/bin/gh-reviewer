@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `gh`, acting as the reviewer bot account instead of the owner.
 #
-#   .claude/bin/gh-reviewer pr review 123 --approve --body-file .claude/tmp/review-123.md
+#   .claude/bin/gh-reviewer pr review 123 --approve --body-file .pipeline-tmp/review-123.md
 #
 # Branch protection requires one approving review from someone who is not the
 # PR's author. Every implementer pushes as the owner's account, so the only
