@@ -14,6 +14,8 @@ executable form. Everything project-specific lives in config.json beside it.
     pipeline.py set-status ISSUE STATUS set one status label (or "none"), dropping the rest
     pipeline.py check-pr-body           PR description shape, body on stdin (CI)
     pipeline.py setup-repo [--dry-run]  labels, repo settings, branch protection, bot access
+    pipeline.py doctor                  check the whole setup, one line per check
+    pipeline.py stats [--days N]        what the pipeline did: cycle time, fix rounds, escalations
     pipeline.py config KEY              print one value from config.json (for the shims)
 
 Everything that decides is a pure function over plain dicts and is tested
@@ -56,12 +58,17 @@ DEFAULT_CONFIG = {
     # to one unless its issue carries `human-decision`.
     "control_paths": [".github/", ".claude/", "run_tests.sh", "CLAUDE.md",
                       "CONTRIBUTING-agents.md", "docs/Pipeline.md"],
+    # Without branch protection nothing enforces the gate, so the tick holds
+    # all work while protection is missing or has drifted. Turn off only to try
+    # the pipeline out on a repository that cannot have protection.
+    "require_protection": True,
     "limits": {
         "max_parallel_implement": 3,
         "max_parallel_review": 2,
         "max_parallel_fix": 3,
         "max_parallel_triage": 2,
         "max_dispatch_per_tick": 8,
+        "max_agent_runs_per_day": 50,
         "max_fix_rounds": 2,
         "max_conflict_rounds": 2,
         "max_review_attempts": 2,
@@ -73,14 +80,36 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config(path: Path = HERE / "config.json") -> dict:
-    """config.json over the defaults; a missing file means all defaults."""
+CONFIG_WARNINGS: list[str] = []
+
+
+def load_config(path: Path = HERE / "config.json", warnings: list[str] | None = None) -> dict:
+    """config.json over the defaults; a missing file means all defaults.
+
+    A file that is not JSON, or a limit that is not a number, stops every
+    command with the file and the place -- not a traceback from an import.
+    A key nobody reads (a typo: `max_parallel_reviews`) is a warning, which
+    `pipeline run` reports: silently keeping the default is how a limit that
+    was meant to change does not.
+    """
+    warnings = CONFIG_WARNINGS if warnings is None else warnings
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         user = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return cfg
-    limits = {**cfg["limits"], **user.get("limits", {})}
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"pipeline: {path} is not valid JSON: {e.msg} at line {e.lineno}, "
+                         f"column {e.colno}")
+    for key in sorted(set(user) - set(DEFAULT_CONFIG)):
+        warnings.append(f"{path.name}: unknown key `{key}` is ignored")
+    for key in sorted(set(user.get("limits", {})) - set(DEFAULT_CONFIG["limits"])):
+        warnings.append(f"{path.name}: unknown limit `{key}` is ignored")
+    limits = {**cfg["limits"], **{k: v for k, v in user.get("limits", {}).items()
+                                  if k in DEFAULT_CONFIG["limits"]}}
+    for key, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise SystemExit(f"pipeline: {path}: limit `{key}` must be a number, not {value!r}")
     cfg.update(user)
     cfg["limits"] = limits
     return cfg
@@ -121,6 +150,7 @@ ATTEMPT = "attempt-1"
 # The owner answered a question the pipeline asked (docs/Pipeline.md § What
 # stays with the owner): the tick resumes the item and removes the label.
 ANSWERED = "human:answered"
+STATUS_ISSUE = "pipeline:status"
 SPEC_DEFECT = "spec-defect"
 TRIAGED = "triaged"
 FIX_ROUND = "fix-round-"
@@ -150,6 +180,7 @@ LABELS = {
     MAIN_RED: ("b60205", "The default branch is red; fix passes wait until it is green"),
     ATTEMPT: ("fbca04", "An implementer ended once without a PR or an escalation"),
     ANSWERED: ("0e8a16", "The owner answered: the next tick resumes this and removes the label"),
+    STATUS_ISSUE: ("ededed", "The pipeline's heartbeat: every tick rewrites this issue's body"),
     SPEC_DEFECT: ("e99695", "Review handed this back because the issue was underspecified"),
     TRIAGED: ("d4c5f9", "Triage has answered this once; a second escalation goes to a human"),
     AGENT_TASK: ("0052cc", "A single seam, sized for one coding agent and one branch"),
@@ -169,6 +200,7 @@ class Limits:
     max_parallel_fix: int
     max_parallel_triage: int
     max_dispatch_per_tick: int
+    max_agent_runs_per_day: int
     max_fix_rounds: int
     max_conflict_rounds: int
     max_review_attempts: int
@@ -181,7 +213,7 @@ class Limits:
     def from_config(cls, raw: dict) -> "Limits":
         return cls(**{k: int(raw[k]) for k in (
             "max_parallel_implement", "max_parallel_review", "max_parallel_fix",
-            "max_parallel_triage", "max_dispatch_per_tick", "max_fix_rounds",
+            "max_parallel_triage", "max_dispatch_per_tick", "max_agent_runs_per_day", "max_fix_rounds",
             "max_conflict_rounds", "max_review_attempts", "max_comment_only_reviews")},
             stale_in_progress=timedelta(hours=float(raw["stale_in_progress_hours"])),
             stale_working=timedelta(hours=float(raw["stale_working_hours"])),
@@ -565,6 +597,7 @@ def check_pr_body(body: str) -> list[str]:
 @dataclass
 class Plan:
     paused: bool = False
+    pause_reason: str = ""
     setup_problems: list[str] = field(default_factory=list)
     ops: list[dict] = field(default_factory=list)        # bookkeeping, applied in order
     dispatch: list[dict] = field(default_factory=list)   # agents to spawn
@@ -575,7 +608,7 @@ class Plan:
 
     def to_json(self) -> dict:
         return {k: getattr(self, k) for k in (
-            "paused", "setup_problems", "ops", "dispatch",
+            "paused", "pause_reason", "setup_problems", "ops", "dispatch",
             "waiting", "in_flight", "awaiting_human", "deferred")}
 
 
@@ -629,9 +662,26 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
     main = snap.get("main") or {}
     main_red = list(main.get("red") or [])
 
-    if snap.get("paused") or any(PAUSE in labels_of(i) for i in issues):
-        plan.paused = True
-        return plan
+    # A pause no longer returns at once: the tick still says what waits on the
+    # owner, and still turns off the auto-merges it would otherwise let run.
+    pause_why = ""
+    if any(PAUSE in labels_of(i) for i in issues) or snap.get("paused") is True:
+        pause_why = f"`{PAUSE}` on an open issue"
+    elif snap.get("paused"):
+        pause_why = str(snap["paused"])
+    protection = snap.get("protection") or {}
+    if protection.get("state") in ("missing", "drift") and snap.get("require_protection", True):
+        # Nothing enforces the gate: an approval could merge red code, an agent
+        # could push to the default branch. Hold everything until it is back.
+        why = "; ".join(protection.get("problems") or [protection["state"]])
+        pause_why = pause_why or f"branch protection {protection['state']} ({why})"
+        plan.awaiting_human.append(
+            f"branch protection on {DEFAULT_BRANCH} is {protection['state']}: {why} -- run "
+            "`.claude/bin/pipeline setup-repo` in a terminal (or set require_protection false)")
+    elif protection.get("state") == "unreadable":
+        plan.setup_problems.append(
+            "cannot read branch protection (the agents' token needs Administration: read) -- "
+            "the tick cannot tell whether the gate is on")
     if not reviewer:
         plan.setup_problems.append(
             f"reviewer bot login unknown: no token at {CONFIG['reviewer_token_file']} "
@@ -1164,17 +1214,39 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         plan.dispatch.append({"kind": "plan", "agent": "github-planner", "mode": "roadmap",
                               "reason": "queue empty"})
 
-    # ---- one tick's budget ----
-    if len(plan.dispatch) > lim.max_dispatch_per_tick:
-        kept, room = [], lim.max_dispatch_per_tick - sum(1 for d in plan.dispatch if d.get("must"))
+    # ---- one tick's budget, and one day's ----
+    def trim(cap: int, why: str) -> None:
+        if len(plan.dispatch) <= cap:
+            return
+        kept, room = [], cap - sum(1 for d in plan.dispatch if d.get("must"))
         for d in plan.dispatch:
             if d.get("must") or room > 0:
                 kept.append(d)
                 room -= 0 if d.get("must") else 1
             else:
                 what = f"PR #{d['pr']}" if d.get("pr") else f"#{d.get('issue')}"
-                plan.deferred.append(f"{what}: dispatch cap ({lim.max_dispatch_per_tick}) reached")
+                plan.deferred.append(f"{what}: {why}")
         plan.dispatch = kept
+
+    trim(lim.max_dispatch_per_tick, f"dispatch cap ({lim.max_dispatch_per_tick}) reached")
+    if lim.max_agent_runs_per_day > 0:
+        left = max(0, lim.max_agent_runs_per_day - int(snap.get("runs_today") or 0))
+        if len(plan.dispatch) > left:
+            plan.setup_problems.append(
+                f"daily budget: {lim.max_agent_runs_per_day} agent runs in 24 hours reached -- "
+                "raise max_agent_runs_per_day, or wait")
+        trim(left, f"daily budget ({lim.max_agent_runs_per_day} runs in 24 h) reached")
+
+    if pause_why:
+        plan.paused = True
+        plan.pause_reason = pause_why
+        plan.dispatch = []
+        # Approved PRs would still merge the moment their checks go green.
+        # Unpausing turns auto-merge back on: an approval at the head without
+        # it is already an op of its own.
+        plan.ops = [{"op": "disable-automerge", "kind": "pr", "number": p_["number"],
+                     "why": "the pipeline is paused"}
+                    for p_ in prs if p_.get("autoMerge") and not p_.get("crossRepo")]
     return plan
 
 
@@ -1416,6 +1488,30 @@ class Gh:
                 pass  # the bot cannot comment here: still say it, as the agents
         self._run(args, input=body, mutating=True)
 
+    def protection_state(self) -> dict:
+        """ok | missing | drift | unreadable, and what drifted."""
+        try:
+            actual = self.json(["api", f"repos/{{owner}}/{{repo}}/branches/{DEFAULT_BRANCH}/protection"])
+        except GhError as e:
+            text = str(e)
+            if "404" in text or "not protected" in text.lower():
+                return {"state": "missing", "problems": ["no branch protection"]}
+            return {"state": "unreadable", "problems": [text[:200]]}
+        drift = protection_drift(actual, protection_payload(actions_app_id(self)))
+        return {"state": "drift" if drift else "ok", "problems": drift}
+
+    def disable_automerge(self, n: int) -> None:
+        self._run(["pr", "merge", str(n), "--disable-auto"], mutating=True)
+
+    def upsert_status_issue(self, body: str) -> int | None:
+        found = self.json(["issue", "list", "--label", STATUS_ISSUE, "--state", "open",
+                           "--limit", "1", "--json", "number"]) or []
+        if found:
+            n = found[0]["number"]
+            self._run(["issue", "edit", str(n), "--body-file", "-"], input=body, mutating=True)
+            return n
+        return self.create_issue("[pipeline] Status", body, [STATUS_ISSUE])
+
     def owner_login(self) -> str | None:
         try:
             return (self.json(["repo", "view", "--json", "owner"]) or {}).get("owner", {}).get("login")
@@ -1610,6 +1706,248 @@ def sync_checkout(root: Path = REPO_ROOT, run=subprocess.run) -> list[str]:
     return []
 
 
+# --- the tick log -----------------------------------------------------------------
+#
+# One JSON line per `pipeline run --apply`, under the git directory -- in no
+# branch and no pull request, shared by every worktree of the checkout. It is
+# the daily budget's counter, `stats`' memory of agent runs, and the evidence
+# when the pipeline did something strange at 3 a.m.
+
+def pipeline_dir(root: Path = REPO_ROOT, run=subprocess.run) -> Path | None:
+    proc = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root,
+               capture_output=True, text=True, encoding="utf-8")
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()) / "pipeline"
+
+
+def read_tick_log(directory: Path | None, since: datetime | None = None) -> list[dict]:
+    if directory is None:
+        return []
+    entries = []
+    try:
+        lines = (directory / "ticks.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        at = parse_time(e.get("at"))
+        if since is None or (at and at >= since):
+            entries.append(e)
+    return entries
+
+
+def append_tick_log(directory: Path | None, entry: dict) -> None:
+    if directory is None:
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "ticks.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def runs_in(entries: list[dict]) -> int:
+    return sum(len(e.get("dispatched") or []) for e in entries)
+
+
+def tick_entry(out: dict, now: datetime) -> dict:
+    return {
+        "at": now.isoformat().replace("+00:00", "Z"),
+        "paused": out.get("pause_reason") or ("paused" if out.get("paused") else ""),
+        "dispatched": [f"{d['kind']} " + (f"PR #{d['pr']}" if d.get("pr") else f"#{d.get('issue') or ''}")
+                       for d in out.get("dispatch", [])],
+        "awaiting_human": len(out.get("awaiting_human", [])),
+        "failed": [x for x in out.get("ops_done", []) + out.get("claims", []) if x.startswith("FAILED")],
+        "setup_problems": len(out.get("setup_problems", [])),
+    }
+
+
+def status_body(out: dict, week: list[dict], now: datetime) -> str:
+    """The status issue: what the owner opens on a phone to see if the pipeline lives."""
+    def section(title: str, items: list[str], empty: str) -> list[str]:
+        lines = [f"### {title} ({len(items)})", ""]
+        lines += [f"- {x}" for x in items] if items else [f"_{empty}_"]
+        return lines + [""]
+
+    kinds: dict[str, int] = {}
+    for e in week:
+        for d in e.get("dispatched") or []:
+            k = d.split()[0]
+            kinds[k] = kinds.get(k, 0) + 1
+    stamp = now.strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        "<!-- Rewritten by every tick (docs/Pipeline.md § The tick). Edits here are overwritten. -->",
+        f"**Last tick:** {stamp}" + (f" -- **paused:** {out['pause_reason']}" if out.get("paused") else ""),
+        "",
+        "If this time is old, no tick has run since: check the scheduled task and the machine.",
+        "",
+    ]
+    lines += section("Needs you", out.get("awaiting_human", []), "nothing")
+    lines += section("Dispatched in this tick", [f"{d['kind']} " + (f"PR #{d['pr']}" if d.get("pr")
+                                                  else f"#{d.get('issue') or ''}")
+                                                  for d in out.get("dispatch", [])], "nothing")
+    lines += section("Setup problems", out.get("setup_problems", []), "none")
+    lines += [f"**Now:** {len(out.get('in_flight', []))} in flight, "
+              f"{len(out.get('waiting', []))} waiting, {len(out.get('deferred', []))} deferred.", ""]
+    lines += [f"**Last 7 days:** {len(week)} ticks, {runs_in(week)} agent runs"
+              + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + ")" if kinds else "")
+              + f", {sum(len(e.get('failed') or []) for e in week)} failed writes."]
+    return "\n".join(lines) + "\n"
+
+
+def compute_stats(merged: list[dict], closed: list[dict], ticks: list[dict], now: datetime,
+                  days: int) -> dict:
+    """What the pipeline did in the window -- the signals LESSONS.md learned to count."""
+    def hours(a, b) -> float | None:
+        ta, tb = parse_time(a), parse_time(b)
+        return (tb - ta).total_seconds() / 3600 if ta and tb else None
+
+    def median(xs: list[float]) -> float | None:
+        xs = sorted(x for x in xs if x is not None)
+        if not xs:
+            return None
+        mid = len(xs) // 2
+        return round(xs[mid] if len(xs) % 2 else (xs[mid - 1] + xs[mid]) / 2, 1)
+
+    since = now - timedelta(days=days)
+    prs = [q for q in merged if (parse_time(q.get("mergedAt")) or since) >= since]
+    issues = [i for i in closed if (parse_time(i.get("closedAt")) or since) >= since]
+    rounds = [q for q in prs if any(l.startswith((FIX_ROUND, CONFLICT_ROUND)) for l in labels_of(q))]
+    kinds: dict[str, int] = {}
+    for e in ticks:
+        for d in e.get("dispatched") or []:
+            kinds[d.split()[0]] = kinds.get(d.split()[0], 0) + 1
+    return {
+        "days": days,
+        "merged_prs": len(prs),
+        "median_hours_pr_open_to_merge": median([hours(q.get("createdAt"), q.get("mergedAt")) for q in prs]),
+        "median_hours_issue_open_to_close": median([hours(i.get("createdAt"), i.get("closedAt"))
+                                                    for i in issues]),
+        "prs_that_needed_a_fix_pass": len(rounds),
+        "fix_pass_rate": round(len(rounds) / len(prs), 2) if prs else None,
+        "spec_defects": sum(1 for q in prs if SPEC_DEFECT in labels_of(q)),
+        "issues_closed": len(issues),
+        "issues_that_went_to_triage": sum(1 for i in issues if TRIAGED in labels_of(i)),
+        "ticks": len(ticks),
+        "agent_runs": kinds,
+    }
+
+
+# --- doctor -----------------------------------------------------------------------
+
+def workflow_jobs(root: Path = REPO_ROOT) -> set[str]:
+    """Job ids in .github/workflows/*.yml, read without a YAML library: every
+    key indented two spaces under a top-level `jobs:`."""
+    jobs: set[str] = set()
+    for wf in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        in_jobs = False
+        for line in wf.read_text(encoding="utf-8").splitlines():
+            if re.match(r"^jobs:\s*$", line):
+                in_jobs = True
+            elif re.match(r"^\S", line):
+                in_jobs = False
+            elif in_jobs:
+                m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+                if m:
+                    jobs.add(m.group(1))
+    return jobs
+
+
+def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
+                  run=subprocess.run) -> list[tuple[str, str, str]]:
+    """(ok | warn | fail, check, detail) for everything the pipeline needs."""
+    out: list[tuple[str, str, str]] = []
+
+    def add(level: str, name: str, detail: str) -> None:
+        out.append((level, name, detail))
+
+    for tool in ("gh", "git", "jq"):
+        add("ok" if which(tool) else "fail", f"tool: {tool}",
+            "on PATH" if which(tool) else "missing -- docs/AgentEnvironment.md")
+    add("ok" if bash_path() else "fail", "tool: bash", bash_path() or "no usable bash")
+
+    auth = run([gh.gh, "auth", "status"], capture_output=True, text=True, encoding="utf-8")
+    text = (auth.stdout or "") + (auth.stderr or "")
+    if auth.returncode != 0:
+        add("fail", "gh login", "not logged in -- gh auth login")
+    elif "github_pat_" in text:
+        add("ok", "gh login", "a fine-grained token")
+    else:
+        add("warn", "gh login", "not a fine-grained token: if the tick runs with this login, the "
+                                "agents hold its full rights (docs/Pipeline.md § Setup, step 2)")
+
+    login = gh.reviewer_login()
+    add("ok" if login else "fail", "reviewer bot",
+        f"token works, login {login}" if login else f"no working token at {reviewer_token_path()}")
+
+    try:
+        repo = gh.json(["api", "repos/{owner}/{repo}"]) or {}
+    except GhError as e:
+        repo = {}
+        add("fail", "repository", str(e)[:200])
+    if repo:
+        bad = [k for k, want in (("allow_auto_merge", True), ("delete_branch_on_merge", True),
+                                 ("allow_squash_merge", True), ("allow_merge_commit", False),
+                                 ("allow_rebase_merge", False)) if repo.get(k) != want]
+        add("warn" if bad else "ok", "repository settings",
+            f"differ from setup-repo: {', '.join(bad)}" if bad else "as setup-repo sets them")
+        if (repo.get("owner") or {}).get("type") == "Organization" and not CONFIG.get("agent_login"):
+            add("fail", "agent_login", "the repository belongs to an organisation: set agent_login "
+                                       "in .claude/pipeline/config.json")
+        if login:
+            try:
+                perm = (gh.json(["api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"])
+                        or {}).get("permission")
+            except GhError:
+                perm = None
+            add("ok" if perm in ("admin", "maintain", "write") else "fail", "reviewer bot access",
+                f"{perm}" if perm else "not a collaborator -- run setup-repo")
+
+    state = gh.protection_state()
+    add({"ok": "ok", "unreadable": "warn"}.get(state["state"], "fail"),
+        f"branch protection on {DEFAULT_BRANCH}",
+        state["state"] + (": " + "; ".join(state["problems"]) if state["problems"] else ""))
+
+    try:
+        wf = gh.json(["api", "repos/{owner}/{repo}/actions/permissions/workflow"]) or {}
+        ok = wf.get("default_workflow_permissions") == "read" and not wf.get("can_approve_pull_request_reviews")
+        add("ok" if ok else "fail", "Actions token", "read-only, cannot approve" if ok
+            else f"{wf} -- a workflow could approve a PR; run setup-repo")
+    except GhError as e:
+        add("warn", "Actions token", f"cannot read: {str(e)[:120]}")
+
+    have = labels_of({"labels": [{"name": n} for n in gh.labels()]})
+    missing = sorted(set(LABELS) - have)
+    add("warn" if missing else "ok", "labels",
+        f"missing: {', '.join(missing)} -- the next tick creates them" if missing else "all present")
+
+    jobs = workflow_jobs(root)
+    absent = [c for c in REQUIRED_CHECKS if c not in jobs]
+    add("fail" if absent else "ok", "required checks",
+        f"no workflow job named {', '.join(absent)}: those checks never report and nothing merges"
+        if absent else f"{', '.join(REQUIRED_CHECKS)} all exist as workflow jobs")
+
+    settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    rules = settings.get("permissions", {}).get("allow", [])
+    test = str(CONFIG["test_command"]).split()[0]
+    add("ok" if any(test in r for r in rules) else "fail", "test command allowed",
+        f"{test} is in .claude/settings.json" if any(test in r for r in rules)
+        else f"no allow rule names {test}: unattended, every test run is refused")
+
+    for problem in preflight(root, run=run, which=which):
+        add("warn", "checkout", problem)
+    wts = run(["git", "worktree", "list", "--porcelain"], cwd=root, capture_output=True, text=True,
+              encoding="utf-8")
+    count = sum(1 for l in (wts.stdout or "").splitlines() if l.startswith("worktree ")) - 1
+    add("warn" if count > 10 else "ok", "worktrees",
+        f"{count} besides the main checkout" + (" -- clean up (github_clean-branches skill)" if count > 10 else ""))
+    for w in CONFIG_WARNINGS:
+        add("warn", "config", w)
+    return out
+
+
 def make_lint_fn(gh: Gh, open_numbers: set[int]):
     cache: dict[int, str | None] = {}
 
@@ -1658,6 +1996,8 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
                 gh.post_status(op["sha"], op["context"], op["description"])
             elif kind == "enable-automerge":
                 gh.enable_automerge(n, op.get("head"))
+            elif kind == "disable-automerge":
+                gh.disable_automerge(n)
             elif kind == "rerun":
                 gh.rerun(op["run"])
             elif kind == "create-issue":
@@ -1740,27 +2080,39 @@ def cmd_run(args) -> int:
     # The running pipeline.py is already loaded: an update to it counts from
     # the next tick.
     synced = sync_checkout() if args.apply else []
+    now = datetime.now(timezone.utc)
+    log_dir = pipeline_dir()
     issues = gh.open_issues()
     prs = gh.open_prs()
+    # A file only the owner's machine has: an agent that can reach GitHub
+    # cannot take it away, as it could the label.
+    kill_file = log_dir is not None and (log_dir / "pause").exists()
     snap = {
-        "now": datetime.now(timezone.utc),
+        "now": now,
         "issues": issues,
         "prs": prs,
         "reviewer_login": gh.reviewer_login(),
         "remote_branches": remote_agent_branches(),
-        "paused": gh.paused(),
+        "paused": gh.paused() or (f"the local kill file {log_dir / 'pause'}" if kill_file else False),
         "truncated": len(issues) >= ISSUE_LIMIT or len(prs) >= PR_LIMIT,
         "main": gh.main_health(),
         "owner_login": gh.owner_login(),
+        "protection": gh.protection_state(),
+        "require_protection": bool(CONFIG.get("require_protection", True)),
+        "runs_today": runs_in(read_tick_log(log_dir, now - timedelta(hours=24))),
     }
     lint_fn = make_lint_fn(gh, {i["number"] for i in issues})
     plan = decide(snap, parse_allowlist, lint_fn)
     out = plan.to_json()
-    out["setup_problems"] = out["setup_problems"] + synced + preflight()
-    if args.apply and not plan.paused:
+    out["setup_problems"] = out["setup_problems"] + synced + preflight() + CONFIG_WARNINGS
+    if args.apply:
+        # Paused or not: the status issue needs its label too.
         made = gh.ensure_labels()
         if made:
             out["labels_created"] = made
+    if args.apply and plan.paused:
+        out["ops_done"] = apply_ops(gh, plan, lint_fn)     # only turning auto-merge off
+    if args.apply and not plan.paused:
         out["ops_done"] = apply_ops(gh, plan, lint_fn)
         out["claims"] = []
         for item in plan.dispatch:
@@ -1775,7 +2127,36 @@ def cmd_run(args) -> int:
         out["dispatch"] = [d for d in plan.dispatch if not d.get("claim_failed")]
     for d in out["dispatch"]:
         d.pop("must", None)
+    if args.apply:
+        append_tick_log(log_dir, tick_entry(out, now))
+        try:
+            week = read_tick_log(log_dir, now - timedelta(days=7))
+            out["status_issue"] = gh.upsert_status_issue(status_body(out, week, now))
+        except GhError as e:
+            out["status_issue"] = f"FAILED: {e}"
     print(json.dumps(out, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    report = doctor_report(Gh())
+    width = max(len(name) for _, name, _ in report)
+    for level, name, detail in report:
+        print(f"{level.upper():4}  {name.ljust(width)}  {detail}")
+    fails = sum(1 for level, _, _ in report if level == "fail")
+    print(f"\n{fails} failing, {sum(1 for l, _, _ in report if l == 'warn')} warnings")
+    return 1 if fails else 0
+
+
+def cmd_stats(args) -> int:
+    gh = Gh()
+    now = datetime.now(timezone.utc)
+    merged = gh.json(["pr", "list", "--state", "merged", "--limit", "300", "--json",
+                      "number,labels,createdAt,mergedAt"]) or []
+    closed = gh.json(["issue", "list", "--state", "closed", "--label", AGENT_TASK, "--limit", "300",
+                      "--json", "number,labels,createdAt,closedAt"]) or []
+    ticks = read_tick_log(pipeline_dir(), now - timedelta(days=args.days))
+    print(json.dumps(compute_stats(merged, closed, ticks, now, args.days), indent=2))
     return 0
 
 
@@ -2081,6 +2462,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("check-pr-body"); s.set_defaults(fn=cmd_check_pr_body)
     s = sub.add_parser("setup-repo"); s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_setup_repo)
+    s = sub.add_parser("doctor"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("stats"); s.add_argument("--days", type=int, default=30); s.set_defaults(fn=cmd_stats)
     s = sub.add_parser("config"); s.add_argument("key"); s.set_defaults(fn=cmd_config)
 
     args = p.parse_args(argv)
