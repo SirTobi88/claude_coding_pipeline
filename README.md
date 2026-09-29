@@ -141,6 +141,8 @@ run_tests.sh              the single test entry point (here: the pipeline's own 
 .claude/bin/pipeline run --apply      # one tick's bookkeeping and claims (the tick runs this)
 .claude/bin/pipeline lint 42          # is issue #42 ready, and if not, why
 .claude/bin/pipeline setup-repo       # labels, repo settings, branch protection, bot access
+.claude/bin/pipeline doctor           # is every part of the setup in place
+.claude/bin/pipeline stats            # what the pipeline did in the last 30 days
 .claude/bin/gh-reviewer api user      # is the reviewer token working
 ./run_tests.sh                        # the test entry point
 ```

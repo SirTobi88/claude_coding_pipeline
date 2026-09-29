@@ -53,6 +53,8 @@ USED = [
     ".claude/bin/pipeline set-status 12 status:escalated",
     ".claude/bin/pipeline release pr 105",
     ".claude/bin/pipeline config test_command",
+    ".claude/bin/pipeline doctor",
+    ".claude/bin/pipeline stats --days 7",
     ".claude/bin/gh-reviewer api user --jq .login",
     '.claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/105/reviews" -f commit_id=abc -f event=APPROVE',
     ".claude/bin/gh-reviewer pr merge 105 --auto --squash --delete-branch --match-head-commit abc",
