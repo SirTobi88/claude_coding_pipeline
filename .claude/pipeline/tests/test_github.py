@@ -111,6 +111,27 @@ class ApplyOpsTests(unittest.TestCase):
         self.assertEqual(gh.labels_of[("issue", 5)], {p.AGENT_TASK, p.IN_PROGRESS})
 
 
+class HandOffTests(unittest.TestCase):
+    def test_apply_ops_posts_hand_offs_as_the_bot_and_the_answer_status(self):
+        seen = []
+
+        class Recorder(FakeGh):
+            def comment(self, kind, n, body, as_bot=False):
+                seen.append(("comment", n, as_bot))
+
+            def post_status(self, sha, context, description):
+                seen.append(("status", sha, context, description))
+
+        plan = p.Plan(ops=[
+            {"op": "comment", "kind": "pr", "number": 105, "body": "@o handed over", "as_bot": True},
+            {"op": "post-status", "number": 105, "sha": "abc", "context": p.ANSWERED_STATUS,
+             "description": "comments=2 attempts=0"},
+        ])
+        p.apply_ops(Recorder(), plan, lint_fn=None)
+        self.assertEqual(seen, [("comment", 105, True),
+                                ("status", "abc", p.ANSWERED_STATUS, "comments=2 attempts=0")])
+
+
 class ClaimTests(unittest.TestCase):
     def test_an_issue_claimed_since_the_survey_is_refused(self):
         gh = FakeGh(issues={5: {p.AGENT_TASK, p.IN_PROGRESS}})
@@ -157,10 +178,13 @@ class ClaimTests(unittest.TestCase):
 
 class ReleaseTests(unittest.TestCase):
     def release(self, fake, *argv):
+        import contextlib
+        import io
         orig = p.Gh
         try:
             p.Gh = lambda *a, **k: fake
-            p.main(["release", *argv])
+            with contextlib.redirect_stdout(io.StringIO()):
+                p.main(["release", *argv])
         finally:
             p.Gh = orig
 

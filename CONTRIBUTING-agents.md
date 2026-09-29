@@ -92,6 +92,9 @@ that comes back with a plausible guess baked into 300 lines is the expensive one
 - Do not edit design docs unless the issue's Files in scope says you may. When a
   decision genuinely changes, the doc update ships in the same change — but the
   decision itself is made by a human.
+- A doc that contradicts the code, or another doc, is a decision too: which side
+  is right is the owner's call. It is filed as a question issue, never as "make
+  the doc match the code" (`.claude/skills/github-issue-create/SKILL.md` § 0).
 
 ## Branches, commits, PRs
 
@@ -120,8 +123,9 @@ platform (`docs/Pipeline.md` § *Merging*):
   other agent and to the scheduled tick's own session). `docs/Pipeline.md`
   § *What binds an agent* says which of these rules the platform enforces and
   which are guard rails.
-- The reviewer approves the exact commit it reviewed and enables auto-merge.
-  Nobody runs a merge by hand, and nobody pushes to the default branch.
+- The reviewer approves the exact commit it reviewed and enables auto-merge, or
+  merges directly when the PR is already clean. Only the bot merges, and
+  nobody pushes to the default branch.
 
 ---
 
@@ -249,7 +253,7 @@ but:
 - **A defect in the change under review** → fixed on the branch when mechanical,
   otherwise a REQUEST_CHANGES task.
 - **Adjacent work the change revealed** → a follow-up issue, filed before the
-  verdict and linked from it.
+  verdict and linked from it; a design decision it revealed → a question issue.
 
 **Never file a follow-up issue for a defect in the diff in front of you.** That
 is how a real bug launders itself past review.

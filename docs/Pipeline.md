@@ -104,7 +104,7 @@ A pull request moves only while its issue lets it. In order:
 | Condition | Next owner |
 |---|---|
 | from a fork | **the owner** — agents never review or fix an outsider's branch |
-| `status:needs-human` | **the owner** |
+| `status:needs-human` | **the owner** — `human:answered` hands it back (§ What stays with the owner) |
 | bound to no issue (no `agent/<N>-` branch, nothing it closes) | **the owner** (a draft just waits) |
 | a second open PR for the same issue | **the owner**, labelled `status:needs-human`: close one |
 | its issue is closed | **the owner**: close the PR, or reopen the issue |
@@ -128,8 +128,8 @@ of one check, only the latest counts, and a cancelled one is pending.
 
 A PR gets `max_fix_rounds` fix passes (default 2, labels `fix-round-1`, …) and
 `max_conflict_rounds` conflict passes (`conflict-round-1`, …). One more
-failure labels it `status:needs-human`. When you hand such a PR back, remove
-`status:needs-human` **and** its round labels. A verdict is only ever read **at
+failure labels it `status:needs-human`. To hand such a PR back, answer it with
+`human:answered` (§ What stays with the owner): the tick restores its rounds. A verdict is only ever read **at
 the head commit** — an approval of an older commit means "review again", never
 "approved". Each review dispatched is counted in a `pipeline/review` commit
 status on the head, so a new push starts the count again.
@@ -154,6 +154,7 @@ is where that surfaces.
 |---|---|
 | `pipeline:working` | An agent holds this issue or PR right now. The tick leaves it alone until it goes stale (`stale_working_hours`), then treats it as abandoned. |
 | `pipeline:reviewing` | With `pipeline:working` on a PR: the holder is the reviewer, so it counts against `max_parallel_review`, not `max_parallel_fix`. |
+| `human:answered` | You answered what the pipeline asked. The next tick resumes the item and removes the label (§ What stays with the owner). |
 | `pipeline:human-holds` | The owner works this issue by hand (`pipeline claim issue N --interactive`). Never reset, never sent a fix pass. `pipeline release issue N --hold` hands it back. |
 | `pipeline:planning` | The roadmap planner is running. It closes this issue when done; the tick closes it after `stale_working_hours`. |
 | `pipeline:main-red` | The default branch is red. Opened and closed by the tick. |
@@ -168,8 +169,10 @@ is where that surfaces.
 
 ## Merging: what GitHub enforces
 
-Nothing merges by hand, and nobody — agent or owner — pushes to the default
-branch. Branch protection (applied by `pipeline setup-repo`):
+Only the reviewer bot merges — by enabling auto-merge, or directly when GitHub
+says the PR is already clean — and nobody, agent or owner, pushes to the
+default branch. Branch protection (applied by `pipeline setup-repo`) applies to
+every merge either way:
 
 - **Required checks**, pinned to GitHub Actions so a hand-posted commit status
   cannot stand in for them (`required_checks`, default `ci`, `tooling`,
@@ -235,7 +238,9 @@ template does not do that yet.
 
 `/pipeline-tick` runs one cycle:
 
-1. `.claude/bin/pipeline run --apply` — surveys GitHub (issues, PRs, the
+1. `.claude/bin/pipeline run --apply` — fast-forwards the tick's checkout to
+   the default branch on GitHub (when it is clean and on it), so this tick's
+   agents read today's prompts and branch from today's code — then surveys GitHub (issues, PRs, the
    default branch's checks), applies bookkeeping (lint results, stale claims,
    exhausted rounds, re-runs, missing auto-merge), **claims** each work item by
    label, and prints the dispatch list as JSON.
@@ -403,6 +408,30 @@ otherwise move on — when:
 - an asset must be produced (`asset` issues are never auto-assigned);
 - triage has already answered once, or a PR has used all its fix passes;
 - the roadmap's next step is behind a human gate. The planner says so in one
-  `pipeline:idle` issue and stops planning until it is closed.
+  `pipeline:idle` issue and stops planning until it is closed;
+- a decision nobody has made yet — a design question, or two docs that
+  disagree. Agents file it as a *question issue* (`agent-task` +
+  `status:needs-human`) instead of work that assumes an answer.
 
 Everything else is the pipeline's.
+
+**You hear about it.** A hand-off comment mentions you and is posted as the
+reviewer bot where it can be — GitHub does not notify you of comments made by
+your own account, and every agent writes as you.
+
+### Answering
+
+Answer in a **comment**, then add the **`human:answered`** label. Do not just
+remove `status:needs-human`: the label is how the tick knows you answered, and
+what it does next depends on the item.
+
+| Waiting on you | What the tick does with your answer |
+|---|---|
+| an `agent-task` issue (a question, an escalation after triage, an implementer that ended twice) | sets it `status:escalated` and sends it to triage — even if triage answered it before — which writes your answer into the issue body; lint takes it from there |
+| an `idea` | hands it back to the planner, which reads your comment |
+| a pull request | removes `status:needs-human`, gives it its fix and conflict rounds back, and stops counting the comment-only reviews and review attempts so far at this head (a `pipeline/answered` commit status records where they stood). The reviewer reads your comment on its next pass |
+
+The rest you resolve directly: close a PR bound to no issue or merge it after
+your own review, close the `pipeline:idle` issue once its gate is open, fix a
+red default branch (the tick closes `pipeline:main-red` itself), work
+`human-decision` issues with `github-issue-fetch`.

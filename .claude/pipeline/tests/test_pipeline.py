@@ -300,6 +300,14 @@ class RollupTests(unittest.TestCase):
         out = p.rollup_checks([run_("ci", "FAILURE", run_id=77), run_("allowlist")], self.REQ)
         self.assertEqual((out["state"], out["failed"]), ("failure", [{"name": "ci", "run": 77}]))
 
+    def test_the_answer_status_carries_its_baseline(self):
+        rollup = [run_("ci"), run_("allowlist"),
+                  {"__typename": "StatusContext", "context": p.ANSWERED_STATUS, "state": "SUCCESS",
+                   "description": "comments=2 attempts=1", "createdAt": "2026-09-27T11:00:00Z"}]
+        out = p.rollup_checks(rollup, self.REQ)
+        self.assertEqual((out["state"], out["answeredComments"], out["answeredAttempts"]),
+                         ("success", 2, 1))
+
     def test_the_review_status_counts_attempts_and_is_not_a_check(self):
         rollup = [run_("ci"), run_("allowlist"),
                   {"__typename": "StatusContext", "context": p.REVIEW_STATUS, "state": "SUCCESS",
@@ -772,6 +780,105 @@ class CapTests(unittest.TestCase):
     def test_an_idle_gate_is_reported(self):
         plan = run([issue(9, [p.IDLE, p.NEEDS_HUMAN])])
         self.assertTrue(any("roadmap gate" in w for w in plan.awaiting_human))
+
+
+
+class OwnerAnswerTests(unittest.TestCase):
+    """docs/Pipeline.md § What stays with the owner: the owner answers with a
+    comment and `human:answered`, and the item resumes where it stopped."""
+
+    def test_an_answered_pr_gets_its_rounds_back(self):
+        prs = [pr(105, labels=[p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1", "fix-round-2"],
+                  reviews=[review("COMMENTED"), review("COMMENTED")])]
+        plan = run([], prs)
+        removed = sorted(o["label"] for o in ops(plan, "remove-label"))
+        self.assertEqual(removed, sorted([p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1", "fix-round-2"]))
+        status = ops(plan, "post-status")[0]
+        self.assertEqual((status["context"], status["sha"]), (p.ANSWERED_STATUS, "abc"))
+        self.assertIn("comments=2", status["description"])
+        self.assertEqual(plan.dispatch, [])
+
+    def test_after_the_answer_old_comment_reviews_no_longer_lock_the_pr(self):
+        # Two comment-only reviews used to re-label the PR every tick, however
+        # often the owner took the label off.
+        answered = dict(pr(105, reviews=[review("COMMENTED"), review("COMMENTED")]),
+                        answeredComments=2, reviewAttempts=2, answeredAttempts=2)
+        plan = run([], [answered])
+        self.assertEqual(kinds(plan), [("review", 5, 105)])
+        self.assertEqual(ops(plan, "add-label"), [])
+
+    def test_an_answered_issue_goes_back_to_triage_even_if_triaged(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.NEEDS_HUMAN, p.ANSWERED, p.TRIAGED])])
+        self.assertEqual([(o["status"], o["expect"]) for o in ops(plan, "set-status")],
+                         [(p.ESCALATED, p.NEEDS_HUMAN)])
+        self.assertEqual(sorted(o["label"] for o in ops(plan, "remove-label")), [p.ANSWERED, p.TRIAGED])
+        self.assertEqual([(d["kind"], d["reason"]) for d in plan.dispatch], [("triage", "owner-answered")])
+
+    def test_an_answered_idea_goes_back_to_the_planner(self):
+        plan = run([issue(7, [p.IDEA, p.NEEDS_HUMAN, p.ANSWERED])])
+        self.assertEqual(sorted(o["label"] for o in ops(plan, "remove-label")), [p.ANSWERED, p.NEEDS_HUMAN])
+        self.assertEqual(plan.dispatch, [])       # not the roadmap planner either
+
+    def test_hand_offs_mention_the_owner_and_go_out_as_the_bot(self):
+        plan = run([], [pr(105, checks="failure", labels=["fix-round-1", "fix-round-2"])],
+                   owner_login="SirTobi88")
+        note = ops(plan, "comment")[0]
+        self.assertTrue(note["body"].startswith("@SirTobi88 "))
+        self.assertTrue(note["as_bot"])
+        self.assertIn(p.ANSWERED, note["body"])
+
+    def test_ordinary_comments_are_not_hand_offs(self):
+        plan = run([issue(5, [p.AGENT_TASK], body=TEMPLATE_BODY)], owner_login="SirTobi88")
+        self.assertFalse(ops(plan, "comment")[0]["as_bot"])
+
+    def test_fix_passes_learn_who_the_reviewer_is(self):
+        plan = run([], [pr(105, reviews=[review("CHANGES_REQUESTED")])])
+        self.assertEqual(plan.dispatch[0]["reviewer"], REVIEWER)
+
+
+class NeedsYouTests(unittest.TestCase):
+    def test_owner_work_without_agent_task_is_listed(self):
+        # asset-task.md files an asset without agent-task; it used to vanish.
+        plan = run([issue(5, [p.ASSET]), issue(6, [p.HUMAN_DECISION])])
+        self.assertEqual(len([w for w in plan.awaiting_human if "#5" in w or "#6" in w]), 2)
+
+    def test_any_needs_human_issue_is_listed(self):
+        plan = run([issue(5, [p.NEEDS_HUMAN])])
+        self.assertTrue(any("#5" in w for w in plan.awaiting_human))
+
+    def test_the_red_main_issue_is_listed_once(self):
+        plan = run([issue(9, [p.MAIN_RED, p.NEEDS_HUMAN])], main={"sha": "d", "red": ["ci"]})
+        self.assertEqual(sum("red" in w for w in plan.awaiting_human), 1)
+
+
+class SyncTests(unittest.TestCase):
+    def fake(self, branch=p.DEFAULT_BRANCH, dirty="", fetch_rc=0, merge_rc=0):
+        from types import SimpleNamespace
+        calls = []
+
+        def run(args, **_):
+            calls.append(args[1])
+            rc = {"fetch": fetch_rc, "merge": merge_rc}.get(args[1], 0)
+            out = {"rev-parse": branch + "\n", "status": dirty}.get(args[1], "")
+            return SimpleNamespace(returncode=rc, stdout=out, stderr="boom" if rc else "")
+        return run, calls
+
+    def test_a_clean_default_checkout_is_fast_forwarded(self):
+        run_, calls = self.fake()
+        self.assertEqual(p.sync_checkout(Path("."), run=run_), [])
+        self.assertIn("merge", calls)
+
+    def test_a_dirty_or_other_checkout_is_left_alone(self):
+        for kw in ({"dirty": " M x.py"}, {"branch": "feature/x"}):
+            run_, calls = self.fake(**kw)
+            self.assertEqual(p.sync_checkout(Path("."), run=run_), [])
+            self.assertNotIn("merge", calls)
+
+    def test_failures_are_reported(self):
+        run_, _ = self.fake(fetch_rc=1)
+        self.assertTrue(p.sync_checkout(Path("."), run=run_))
+        run_, _ = self.fake(merge_rc=1)
+        self.assertIn("fast-forward", p.sync_checkout(Path("."), run=run_)[0])
 
 
 @unittest.skipUnless(p.bash_path(), "bash not available")
