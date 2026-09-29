@@ -169,7 +169,10 @@ class HookRegistrationTests(unittest.TestCase):
                 for h in entry["hooks"]]
 
     def test_guards_are_registered_for_every_session(self):
-        self.assertTrue(any("allowlist_guard.sh" in c for c in self.commands("Edit|Write")))
+        # Every tool that writes a file: NotebookEdit names it `notebook_path`,
+        # and a matcher of `Edit|Write` let it through unseen.
+        self.assertTrue(any("allowlist_guard.sh" in c
+                            for c in self.commands("Edit|Write|MultiEdit|NotebookEdit")))
         self.assertTrue(any("bash_guard.sh" in c for c in self.commands("Bash")))
 
     def test_agents_register_the_bash_guard_with_their_role(self):

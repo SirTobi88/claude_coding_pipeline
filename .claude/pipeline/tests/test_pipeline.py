@@ -881,8 +881,86 @@ class SyncTests(unittest.TestCase):
         self.assertIn("fast-forward", p.sync_checkout(Path("."), run=run_)[0])
 
 
+class GrammarTests(unittest.TestCase):
+    """The Python half of the one grammar (issue_scope.sh documents it)."""
+
+    def test_a_heading_inside_a_code_fence_is_content(self):
+        body = READY_BODY.replace("## Interface\n\n```gdscript\n",
+                                  "## Interface\n\n```gdscript\n## not a heading\n")
+        sections = p.split_sections(body)
+        self.assertIn("## not a heading", sections["interface"])
+        self.assertEqual(p.lint_body(5, body, fake_allowlist, lambda n: "closed").problems, [])
+
+    def test_the_first_section_of_a_name_counts(self):
+        body = "## Files in scope\n\n- `a.py`\n\n## Files in scope\n\n- `b.py`\n"
+        self.assertIn("a.py", p.split_sections(body)["files in scope"])
+
+    def test_list_items_are_the_top_level_ones(self):
+        text = "- [ ] `a.py` (x)\n  - `note.py`\n+ `b.py`\n1. `c.py`\n2) d.py\nprose `e.py`"
+        self.assertEqual(p.list_items(text), ["`a.py` (x)", "`b.py`", "`c.py`", "d.py"])
+
+    def lint(self, scope_text, repo_root=None):
+        body = READY_BODY.split("## Files in scope")[0] + "## Files in scope\n\n" + scope_text + \
+            "\n\n## Non-goals" + READY_BODY.split("## Non-goals")[1]
+        kw = {"repo_root": repo_root} if repo_root else {}
+        return p.lint_body(5, body, lambda b: ["x.py"], lambda n: "closed", **kw)
+
+    def test_prose_instead_of_a_list_is_warned_about(self):
+        r = self.lint("Edit `src/a.py`, but `src/b.py` belongs to #12.")
+        self.assertTrue(any("every backticked path" in w for w in r.warnings), r.warnings)
+
+    def test_paths_only_under_group_headings_are_warned_about(self):
+        r = self.lint("- Source:\n  - `src/a.py`\n- Tests:\n  - `tests/b.py`")
+        self.assertTrue(any("every backticked path" in w for w in r.warnings), r.warnings)
+
+    def test_a_proper_list_gets_no_grammar_warning(self):
+        r = self.lint("- [ ] `src/a.py` (modify) -- not `src/b.py`\n  - a note")
+        self.assertEqual([w for w in r.warnings if "path" in w], [])
+
+    def test_a_second_path_in_an_item_is_warned_about(self):
+        r = self.lint("- `src/a.py`, `src/b.py` (modify)")
+        self.assertTrue(any("only the first path" in w for w in r.warnings), r.warnings)
+
+    def test_an_existing_directory_without_a_slash_is_warned_about(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".github").mkdir()
+            body = READY_BODY
+            r = p.lint_body(5, body, lambda b: [".github", "src/a.py"], lambda n: "closed",
+                            repo_root=Path(d))
+        self.assertTrue(any("`.github/`" in w for w in r.warnings), r.warnings)
+
+    def test_bracket_globs_and_companions_overlap(self):
+        self.assertTrue(p.paths_overlap("src/[ab].py", "src/a.py", companions=()))
+        self.assertTrue(p.paths_overlap("src/a.gd", "src/a.gd.uid", companions=(".uid",)))
+        self.assertFalse(p.paths_overlap("src/a.gd", "src/a.gd.uid", companions=()))
+
+
 @unittest.skipUnless(p.bash_path(), "bash not available")
 class RealParserTests(unittest.TestCase):
+    def test_bash_and_python_agree_on_what_an_entry_covers(self):
+        # Two readings of one allowlist that disagree do not announce it; they
+        # schedule two issues together that write one file. Wherever the bash
+        # parser lets an entry cover a path, the scheduler must see an overlap.
+        import subprocess
+        table = [
+            ("src/a.py", "src/a.py"), ("src/", "src/x/y.py"), ("src/ui", "src/ui/x.gd"),
+            ("src/*.py", "src/a.py"), ("src/*.py", "src/d/a.py"), ("src/**", "src/d/e/a.py"),
+            ("docs/**/*.md", "docs/x.md"), ("docs/**/*.md", "docs/a/b/x.md"), ("**/x.gd", "x.gd"),
+            ("**/x.gd", "deep/x.gd"), ("src/[ab].py", "src/a.py"), (".github/", ".github/workflows/ci.yml"),
+            (".github", ".github/ci.yml"), ("a b/c.png", "a b/c.png"), ("src/a.py", "src/a.pyc"),
+            ("github/", ".github/x"), ("src/x.gd", "src/x.gd.uid"),
+        ]
+        script = '. "$1"; shift; while [ $# -gt 1 ]; do _scope_entry_covers "$1" "$2" && echo yes || echo no; shift 2; done'
+        args = [a for pair in table for a in pair]
+        out = subprocess.run([p.bash_path(), "-c", script, "_", p.SCOPE_LIB.as_posix(), *args],
+                             capture_output=True, text=True, encoding="utf-8").stdout.split()
+        self.assertEqual(len(out), len(table))
+        for (entry, path), covered in zip(table, out):
+            if covered == "yes":
+                self.assertTrue(p.paths_overlap(entry, path, companions=()),
+                                f"bash: `{entry}` covers `{path}`, the scheduler sees no overlap")
+
     def test_a_parser_that_fails_raises_instead_of_reading_empty(self):
         # A bash that cannot source the parser used to return [] silently, and
         # every ready issue was linted needs-spec.

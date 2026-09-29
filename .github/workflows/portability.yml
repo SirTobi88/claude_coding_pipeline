@@ -1,0 +1,56 @@
+name: Portability
+
+# The hooks and the allowlist parser run on the owner's machine -- macOS, with
+# bash 3.2 and BSD tools, or Windows, with Git Bash -- while the required
+# `tooling` job tests them on Linux only. Each has broken on exactly one
+# platform before (docs/LESSONS.md § The machine: a guard that blocked every
+# write on Windows went unnoticed for weeks). This runs the same suites there.
+#
+# Not a required check, and only when the hooks or the pipeline change:
+# macOS and Windows runners cost more minutes than Linux, ten and two times as
+# many on a private repository. Add `portability` to required_checks in
+# .claude/pipeline/config.json if the hooks change often enough to want it.
+on:
+  pull_request:
+    paths:
+      - ".claude/hooks/**"
+      - ".claude/pipeline/**"
+      - ".github/workflows/portability.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            bash: /bin/bash        # 3.2, as macOS ships it, not Homebrew's
+          - os: windows-latest
+            bash: bash             # Git for Windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Hook tests
+        shell: bash
+        # run_tests.sh starts every hook with the bash that runs it ($BASH),
+        # so /bin/bash here means bash 3.2 all the way down.
+        run: ${{ matrix.bash }} .claude/hooks/test/run_tests.sh
+
+      - name: Pipeline tests
+        shell: bash
+        run: |
+          py="$(command -v python3 || command -v python)"
+          "$py" -m unittest discover -s .claude/pipeline/tests -v

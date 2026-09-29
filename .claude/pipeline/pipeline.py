@@ -255,22 +255,50 @@ def strip_comments(text: str) -> str:
 
 
 def split_sections(body: str) -> dict[str, str]:
-    """Level-2 headings to their text, keyed lower-case. `###` is content."""
+    """Level-2 headings to their text, keyed lower-case.
+
+    The same reading as issue_scope.sh: `###` is content, a `## ` line inside a
+    fenced code block is content (an Interface that pastes Markdown or a shell
+    comment is not cut in two), and of two sections with one name the first
+    counts.
+    """
     sections: dict[str, str] = {}
     current = None
     buf: list[str] = []
+    fence = False
+
+    def close() -> None:
+        if current is not None and current not in sections:
+            sections[current] = "\n".join(buf).strip()
+
     for line in strip_comments(body or "").splitlines():
-        m = re.match(r"^##\s+(?!#)(.+?)\s*$", line)
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+        m = None if fence else re.match(r"^##\s+(?!#)(.+?)\s*$", line)
         if m:
-            if current is not None:
-                sections[current] = "\n".join(buf).strip()
+            close()
             current = m.group(1).strip().lower()
             buf = []
         elif current is not None:
             buf.append(line)
-    if current is not None:
-        sections[current] = "\n".join(buf).strip()
+    close()
     return sections
+
+
+def list_items(text: str) -> list[str]:
+    """The top-level list items of a section, as issue_scope.sh reads them:
+    at the list's least indentation, marker and checkbox removed."""
+    found = []
+    fence = False
+    for line in (text or "").replace("\t", "    ").splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+            continue
+        m = None if fence else re.match(r"^( *)([-*+]|\d+[.)])[ \t]+(.*)$", line)
+        if m:
+            found.append((len(m.group(1)), re.sub(r"^\[[ xX]\][ \t]+", "", m.group(3))))
+    least = min((ind for ind, _ in found), default=0)
+    return [t for ind, t in found if ind == least]
 
 
 def find_section(sections: dict[str, str], name: str) -> str | None:
@@ -363,21 +391,47 @@ def _is_dir_entry(entry: str) -> bool:
     return entry.endswith("/") or "." not in entry.rstrip("/").rsplit("/", 1)[-1]
 
 
-def paths_overlap(a: str, b: str) -> bool:
-    """Could two allowlist entries name the same file? Conservative on globs."""
+def paths_overlap(a: str, b: str, companions: tuple[str, ...] | None = None) -> bool:
+    """Could two allowlist entries name the same file? Conservative on globs.
+
+    Wherever issue_scope.sh's `_scope_entry_covers` says an entry covers a
+    path, this says the two overlap (a test holds the two together). A
+    generated companion (`x.gd.uid`) is its source's file here too: two issues
+    may not both be able to write it.
+    """
     # Drop a leading `./` or `/` only. `lstrip("./")` stripped every leading
     # dot, so `.github/` and `github/` read as the same directory.
     a, b = (re.sub(r"^(\./)+", "", s.strip()).lstrip("/") for s in (a, b))
+    for suffix in (companion_suffixes() if companions is None else companions):
+        a, b = (x[: -len(suffix)] if suffix and x.endswith(suffix) else x for x in (a, b))
     if a == b:
         return True
     for x, y in ((a, b), (b, a)):
-        if any(c in x for c in "*?"):
-            prefix = re.split(r"[*?]", x, maxsplit=1)[0]
+        if any(c in x for c in "*?["):
+            prefix = re.split(r"[*?\[]", x, maxsplit=1)[0]
             if y.startswith(prefix) or prefix.startswith(y.rstrip("/") + "/"):
                 return True
         elif _is_dir_entry(x) and y.startswith(x.rstrip("/") + "/"):
             return True
     return False
+
+
+_COMPANIONS: tuple[str, ...] | None = None
+
+
+def companion_suffixes() -> tuple[str, ...]:
+    """SCOPE_COMPANION_SUFFIXES from issue_scope.sh -- one setting, read where it lives."""
+    global _COMPANIONS
+    if _COMPANIONS is None:
+        bash = bash_path()
+        try:
+            out = subprocess.run([bash, "-c", '. "$1"; printf %s "$SCOPE_COMPANION_SUFFIXES"', "_",
+                                  SCOPE_LIB.as_posix()], capture_output=True, text=True,
+                                 encoding="utf-8").stdout if bash else ""
+        except OSError:
+            out = ""
+        _COMPANIONS = tuple(out.split())
+    return _COMPANIONS
 
 
 def scopes_overlap(xs: list[str], ys: list[str]) -> bool:
@@ -412,7 +466,7 @@ def blocked_by_numbers(text: str | None, self_number: int) -> list[int]:
     return sorted({int(n) for n in re.findall(r"(?<![\w/])#(\d+)", text)} - {self_number})
 
 
-def lint_body(number: int, body: str, allowlist_fn, state_fn) -> LintResult:
+def lint_body(number: int, body: str, allowlist_fn, state_fn, repo_root: Path = REPO_ROOT) -> LintResult:
     """Readiness per .github/ISSUE_TEMPLATE/agent-task.md and CONTRIBUTING-agents.md."""
     r = LintResult()
     sections = split_sections(body)
@@ -431,10 +485,36 @@ def lint_body(number: int, body: str, allowlist_fn, state_fn) -> LintResult:
     scope = find_section(sections, "Files in scope")
     if scope is not None and meaningful(scope):
         try:
-            if not allowlist_fn(body):
+            entries = allowlist_fn(body)
+            if not entries:
                 r.problems.append("`## Files in scope` names no parseable path")
         except RuntimeError as e:
+            entries = []
             r.warnings.append(f"allowlist not checked: {e}")
+        # What the parser will read differently from what a reader sees.
+        items = list_items(scope)
+
+        def leads_with_path(item: str) -> bool:
+            m = re.match(r"`([^`]+)`", item) or re.match(r"(\S+)", item)
+            return bool(m and re.search(r"[/.]", m.group(1)))
+        if not any(leads_with_path(i) for i in items):
+            r.warnings.append("no top-level list item in `## Files in scope` starts with a path, so "
+                              "every backticked path in the section counts -- including one the "
+                              "prose says is not this issue's. Write one path per top-level item")
+        for item in items:
+            # Two paths listed together -- "`a.py`, `b.py`" -- not a path and
+            # a note about another file, which the grammar is built to allow.
+            m = re.match(r"`([^`]+)`\s*(?:,|;|&|\+|and)\s*`([^`]+)`", item.strip())
+            if m and re.search(r"[/.]", m.group(2)):
+                r.warnings.append(f"only the first path of an item counts: `{m.group(1)}`, not "
+                                  f"`{m.group(2)}` -- one path per item")
+        for e in entries:
+            # `src/ui` covers what is under it only when it has no extension
+            # in its last segment; `.github` does and is read as a file.
+            if not e.endswith("/") and not re.search(r"[*?\[]", e) and _is_dir_entry(e) is False \
+                    and (repo_root / e).is_dir():
+                r.warnings.append(f"`{e}` is a directory, but reads as a file; write `{e}/` to "
+                                  "allow what is under it")
 
     for sec in ("Interface", "Context"):
         text = find_section(sections, sec) or ""

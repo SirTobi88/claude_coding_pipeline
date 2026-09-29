@@ -37,8 +37,12 @@ scope_issue_from_branch() {
 # number: the cache is machine-wide, and issue 12 of one checkout's origin is
 # not issue 12 of another's.
 _scope_cache_path() {
-    local repo; repo="$(printf '%s' "${2:-}" | tr -c 'A-Za-z0-9' '_')"
-    printf '%s/pipeline-scope-%s-%s.list' "${TMPDIR:-/tmp}" "${repo:-here}" "$1"
+    # The readable part alone is lossy -- `tool-x` and `tool_x` both become
+    # `tool_x` -- so a checksum of the exact identity goes with it.
+    local repo sum
+    repo="$(printf '%s' "${2:-}" | tr -c 'A-Za-z0-9' '_')"
+    sum="$(printf '%s' "${2:-}" | cksum | cut -d' ' -f1)"
+    printf '%s/pipeline-scope-%s-%s-%s.list' "${TMPDIR:-/tmp}" "${repo:-here}" "$sum" "$1"
 }
 
 # Echo one allowlisted path per line for issue <N>. Returns 2 if the issue
@@ -55,11 +59,12 @@ _scope_cache_path() {
 # <repo>, optional, is the repository's identity for the cache key (its origin
 # URL will do). gh reads the issue from the repository of the CURRENT
 # directory, so a caller acting on another checkout runs this from there.
+# SCOPE_NO_CACHE=1 reads the issue afresh -- the guard does, before it refuses.
 scope_fetch_allowlist() {
     local issue="$1"
     local cache; cache="$(_scope_cache_path "$issue" "${2:-}")"
 
-    if [ -f "$cache" ]; then
+    if [ -f "$cache" ] && [ -z "${SCOPE_NO_CACHE:-}" ]; then
         local age
         age=$(( $(date +%s) - $(_scope_mtime "$cache") ))
         if [ "$age" -lt 300 ] && [ -s "$cache" ]; then
@@ -89,29 +94,97 @@ scope_fetch_allowlist() {
 
 # Read an issue body on stdin; echo one allowlisted path per line.
 #
-# The section is everything between the `## Files in scope` heading and the
-# next `## ` heading. Within it, the template writes one entry per list item --
-# `- [ ] \`path\` (modify)` -- and the trailing annotation is free prose that
-# routinely names OTHER files: "#12 also lists it", "that file belongs to #12".
-# So only the LEADING token of a list item is an entry: its first backticked
-# token when it starts with one, otherwise its first word -- an item written
-# without backticks still counts rather than vanishing. Sweeping every
-# backticked token in the section would allowlist a file the issue says in so
-# many words is not this issue's (a real bug in the project this came from).
+# The grammar -- .claude/pipeline/pipeline.py's lint reads the same one, and a
+# test holds the two together:
 #
-# A section whose list items name no paths at all falls back to every
-# backticked path-like token in it. That is over-permissive, but it is the
-# older issues' only shape, and an empty allowlist would fail them outright.
+#   - The section is the FIRST `## Files in scope` heading, in any letter case
+#     and with anything after it (`## Files in scope (allowlist)`), up to the
+#     next `## ` heading. A `###` heading is content.
+#   - HTML comments and fenced code blocks are not part of it: a commented-out
+#     example or a pasted snippet names no file this issue may write.
+#   - An entry is a TOP-LEVEL list item -- `-`, `*`, `+` or `1.` / `1)` at the
+#     list's least indentation, with an optional `[ ]` checkbox. A nested item
+#     is a note about the one above it.
+#   - Only the LEADING token of an item is a path: its first backticked token
+#     when it starts with one (spaces allowed inside), otherwise its first word.
+#     The trailing annotation is free prose that routinely names OTHER files:
+#     "#12 also lists it", "that file belongs to #12". Sweeping every backticked
+#     token would allowlist a file the issue says in so many words is not this
+#     issue's (a real bug in the project this came from).
+#   - A path contains a `/` or a `.`; a leading `./` or `/` is dropped.
+#
+# A section with no list items at all falls back to every backticked
+# path-like token in it. That is over-permissive, and lint warns about it, but
+# it is older issues' only shape and an empty allowlist would fail them.
 scope_parse_allowlist() {
     local section paths
-    section="$(awk '/^##[ \t]+Files in scope/ {f=1; next} /^##[ \t]/ {f=0} f')"
+    section="$(awk '
+        { sub(/\r$/, "") }
+        incomment {
+            i = index($0, "-->")
+            if (!i) next
+            $0 = substr($0, i + 3); incomment = 0
+        }
+        {
+            while ((i = index($0, "<!--")) > 0) {
+                rest = substr($0, i + 4); j = index(rest, "-->")
+                if (j) { $0 = substr($0, 1, i - 1) substr(rest, j + 3) }
+                else   { $0 = substr($0, 1, i - 1); incomment = 1; break }
+            }
+        }
+        /^[ \t]*(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^##[ \t]/ {
+            if (f) exit
+            h = tolower($0)
+            if (!done && h ~ /^##[ \t]+files in scope/) { f = 1; done = 1 }
+            next
+        }
+        f
+    ')"
 
-    paths="$(printf '%s\n' "$section" \
-        | sed -n 's/^[[:space:]]*[-*][[:space:]]\{1,\}\(\[[ xX]\][[:space:]]\{1,\}\)\{0,1\}//p' \
-        | sed -n -e 's/^`\([^`]*\)`.*$/\1/p' -e 't' -e 's/^\([^[:space:]]*\).*$/\1/p' \
-        | _scope_paths_only)"
+    paths="$(printf '%s\n' "$section" | _scope_items | _scope_leading_path)"
     [ -n "$paths" ] || paths="$(printf '%s\n' "$section" | grep -o '`[^`]*`' | tr -d '`' | _scope_paths_only)"
     printf '%s\n' "$paths" | grep -v '^$' | sort -u
+}
+
+# The section on stdin; echo the text of each top-level list item -- those at
+# the list's least indentation -- without its marker and checkbox.
+_scope_items() {
+    awk '
+        { gsub(/\t/, "    ") }
+        match($0, /^ *([-*+]|[0-9]+[.)])[ \t]+/) {
+            len = RLENGTH
+            s = $0; sub(/^ */, "", s); ind = length($0) - length(s)
+            n++; indent[n] = ind; text[n] = substr($0, len + 1)
+            if (n == 1 || ind < min) min = ind
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                if (indent[i] != min) continue
+                t = text[i]; sub(/^\[[ xX]\][ \t]+/, "", t); print t
+            }
+        }
+    '
+}
+
+# One list item's text on each line; echo its leading path, if it has one.
+_scope_leading_path() {
+    awk '
+        substr($0, 1, 1) == "`" {
+            rest = substr($0, 2); j = index(rest, "`")
+            if (!j) next
+            p = substr(rest, 1, j - 1)
+            gsub(/^[ \t]+|[ \t]+$/, "", p)
+        }
+        substr($0, 1, 1) != "`" {
+            split($0, w, /[ \t]+/); p = w[1]
+            sub(/[,;:]+$/, "", p)
+            # Markdown bold around a bare path, not a `**` glob.
+            if (p ~ /^\*\*[^\/]/ && p ~ /\*\*$/ && length(p) > 4) p = substr(p, 3, length(p) - 4)
+        }
+        p ~ /[\/.]/ { sub(/^\.\//, "", p); sub(/^\//, "", p); print p }
+    '
 }
 
 # Keep the tokens that look like a path: a slash or a dot, no whitespace.
@@ -167,7 +240,15 @@ _scope_entry_covers() {
     # directory: it covers everything beneath it. Issues write both forms.
     case "$entry" in
         */) case "$path" in "$entry"*) return 0 ;; esac ;;
-        *[*?]*)                                               # glob entry
+        *[*?[]*)                                              # glob entry
+            # `**` also stands for no directory at all, as in .gitignore:
+            # `docs/**/*.md` covers `docs/x.md`, `**/x.gd` covers a root `x.gd`.
+            case "$entry" in
+                '**/'*) _scope_entry_covers "${entry#\*\*/}" "$path" && return 0 ;;
+            esac
+            case "$entry" in
+                */'**'/*) _scope_entry_covers "${entry%%/\*\*/*}/${entry#*/\*\*/}" "$path" && return 0 ;;
+            esac
             # `case` lets `*` cross `/`, so `ui/*.gd` would also grant
             # `ui/deep/nested.gd`. Hold a glob to its own depth unless it
             # says `**`, which is the spelling that means "and below".

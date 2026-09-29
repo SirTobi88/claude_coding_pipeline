@@ -50,8 +50,11 @@ list it under Blocked by. "Design a sensible API" is not an interface. -->
 ## Files in scope
 
 <!-- Allowlist. The agent may create or modify ONLY these; everything else is
-read-only. One path per list item, leading token only -- prose after it is not
-read as a path. A directory entry ends with `/`. -->
+read-only. One path per top-level list item, leading token only -- prose after
+it, and nested items under it, are not read as paths. A directory entry ends
+with `/` (`.github` without it reads as a file). Backtick a path with spaces.
+`*` stays within one directory; `**` means any depth, none included:
+`docs/**/*.md` covers `docs/x.md`. -->
 
 - [ ] `path/to/file` (modify)
 - [ ] `path/to/new_file` (create)

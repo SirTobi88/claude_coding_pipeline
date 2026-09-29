@@ -119,7 +119,8 @@ gates. The kill switch is one label: `pipeline:pause` on any open issue.
   pipeline/      pipeline.py, config.json, tests/
   settings.json  hook registration, permissions for unattended runs
 .github/
-  workflows/     ci.yml (ci, tooling), pr-contract.yml (allowlist, contract), issue-lint.yml
+  workflows/     ci.yml (ci, tooling), pr-contract.yml (allowlist, contract), issue-lint.yml,
+                 portability.yml (the hooks on macOS and Windows)
   ISSUE_TEMPLATE/ agent-task.md, asset-task.md
   pull_request_template.md
 CLAUDE.md                 project guidelines template
@@ -151,7 +152,7 @@ run_tests.sh              the single test entry point (here: the pipeline's own 
   `.claude/pipeline/config.json` and the schedule to your budget.
 - The tick runs locally, so it only runs while the Claude desktop app (or your
   `/loop` session) is running. Missed scheduled runs catch up on the next start.
-- The allowlist guard only sees edits made through Claude's Edit/Write tools;
+- The allowlist guard only sees edits made through Claude's file-editing tools;
   shell writes are caught by the CI `allowlist` job instead.
 - The pipeline trusts the design docs. If they are vague, the planner files
   vague issues and triage escalates them to you — the fix is better docs, not a

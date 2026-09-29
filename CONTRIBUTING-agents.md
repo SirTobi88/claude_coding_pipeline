@@ -34,8 +34,10 @@ If the work turns out to need a file that is not listed — **stop and escalate*
 agent-authored branch becomes unmergeable.
 
 Two things check it. `.claude/hooks/allowlist_guard.sh` refuses an out-of-scope
-write through the Edit and Write tools before it happens; it does not see a
-write made through the shell, so it catches the accident, not the workaround.
+write through the file-editing tools (Edit, Write, MultiEdit, NotebookEdit)
+before it happens, and a write from an agent's worktree into another checkout of
+the repository; it does not see a write made through the shell, so it catches
+the accident, not the workaround.
 The `allowlist` job in `.github/workflows/pr-contract.yml` checks the whole diff
 whichever way it was written, and it is a required check. Both read the issue
 through the same parser (`.claude/hooks/lib/issue_scope.sh`). An implementer
@@ -164,7 +166,7 @@ not exist.
 
 | Rule | Enforced by | When |
 |---|---|---|
-| Files in scope is an allowlist | `.claude/hooks/allowlist_guard.sh` | before an Edit or Write |
+| Files in scope is an allowlist | `.claude/hooks/allowlist_guard.sh` | before a file-editing tool writes |
 | Files in scope is an allowlist; one issue per PR; every PR from the agents' account is bound to an issue that is open and in flight | `allowlist` job, `pr-contract.yml` (required) | every push and description edit |
 | A pipeline control path changes only under a `human-decision` issue, and never through an unbound pull request | `allowlist` job; the tick dispatches no agent onto such an issue or its PR. The label itself is guarded only by `bash_guard.sh` while the agents' token may label issues | every push; every tick |
 | Agents neither review nor fix a fork's PR or one bound to no issue | the tick (`decide()` lists them under *Needs you*) | every tick |
@@ -175,12 +177,18 @@ not exist.
 | Agents cannot change protection or push workflow files | the agents' token (`docs/Pipeline.md` § Setup) | always |
 | The checks above do what this section says | `.claude/hooks/test/`, `.claude/pipeline/tests/` | `tooling` job |
 
-Four things about the allowlist checks are worth stating plainly:
+Five things about the allowlist checks are worth stating plainly:
 
-- **The edit-time guard fails open; CI does not.** A guard that bricks a session
-  when the network blinks gets switched off, so when it cannot read the issue it
-  lets the write through, and CI is the backstop. Without `gh` and `jq` on the
-  machine the guard is effectively off — the tick's `setup_problems` say so.
+- **The edit-time guard fails open when it cannot tell; CI does not.** A guard
+  that bricks a session when the network blinks gets switched off, so when it
+  cannot read the issue it lets the write through, and CI is the backstop.
+  Without `gh` and `jq` on the machine the guard is effectively off — the
+  tick's `setup_problems` say so. When it *can* tell, it does not guess: an
+  issue whose Files in scope names no parseable path allows no write at all.
+- **One grammar, two readers.** What an entry means — a top-level list item,
+  its leading token, `dir/` for a directory, `**` for any depth including none
+  — is written once in `.claude/hooks/lib/issue_scope.sh`, and the scheduler's
+  overlap check is tested against it.
 - **CI judges a PR with the default branch's code, not the PR's.** `allowlist`
   and `contract` run on `pull_request_target`: the workflow file, the parser
   and the rules all come from the default branch, and nothing from the pull
