@@ -7,9 +7,11 @@ assignees: ''
 ---
 
 <!--
-Read CONTRIBUTING-agents.md before filing. Every section below is required;
-issue-lint checks them and labels the issue status:ready, status:blocked or
-status:needs-spec. Delete the HTML comments as you fill this in.
+Read CONTRIBUTING-agents.md before filing. Every section below except Size is
+required; issue-lint checks them, refuses an issue ticked "Too big", and labels
+it status:ready, status:blocked or status:needs-spec. It keeps one comment on
+the issue saying what it found, warnings included. Delete the HTML comments as
+you fill this in.
 -->
 
 ## Goal

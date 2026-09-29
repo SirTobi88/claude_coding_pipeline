@@ -47,9 +47,11 @@ Your own `gh auth login` belongs in your own account's terminal, for
 - `python3` is often the Microsoft Store alias, which prints an install prompt
   instead of running. `.claude/bin/pipeline` tests each candidate and uses the
   one that starts; call the shim, not `python3`.
-- Claude Code's Bash tool runs Git Bash. `.gitattributes` pins scripts to LF,
-  because `core.autocrlf=true` would check them out with CRLF, which bash
-  cannot run.
+- Claude Code's Bash tool runs Git Bash, which tolerates CRLF scripts. Linux
+  CI, macOS and WSL do not (`$'\r': command not found`). `.gitattributes` pins
+  scripts to LF, so a checkout with `core.autocrlf=true` stays runnable
+  everywhere; a file committed before it existed keeps CRLF until renormalised
+  (`docs/ADOPTING.md` § B).
 - Claude Code hands the allowlist guard Windows paths (`E:\...`); the guard
   converts them with `cygpath`.
 - Never pipe a PowerShell test runner through `2>&1`: PowerShell 5.1 turns
@@ -126,6 +128,28 @@ git config --global --add safe.directory "$(git rev-parse --show-toplevel)/.clau
 
 Cleanup: `git worktree remove --force .claude/worktrees/<name>`. `--force` is
 expected: a tree that ran tests is never clean.
+
+Who makes which tree:
+
+- **Implementers** get one from Claude Code (`isolation: worktree`); a tree
+  with commits is kept after the agent ends. The branch it holds is why a fix
+  pass checks out a differently named local branch (`agent/<N>-fix-<P>`).
+- **The reviewer** makes a detached one, `.claude/worktrees/review-<N>`, and
+  removes it when done; a leftover is removed at the start of the next review.
+- The allowlist guard refuses a write from one tree into another, the main
+  checkout included.
+
+## The pipeline's files outside the repository
+
+| What | Where | Written by |
+|---|---|---|
+| Tick log | `<git dir>/pipeline/ticks.jsonl` | every `pipeline run --apply` |
+| Kill file | `<git dir>/pipeline/pause` | you (`touch`); the tick pauses while it exists |
+| Allowlist cache | `$TMPDIR/pipeline-scope-*.list`, five minutes | the guards |
+| The bot's token | `reviewer_token_file` in `.claude/pipeline/config.json` | you, once |
+
+`<git dir>` is the checkout's common git directory, shared by every worktree:
+`git rev-parse --path-format=absolute --git-common-dir`.
 
 ---
 

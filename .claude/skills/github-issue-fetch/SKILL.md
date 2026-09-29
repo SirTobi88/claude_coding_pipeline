@@ -28,9 +28,10 @@ whether to proceed.
 ## 2. Parse the template sections
 
 Split the body on its `## ` headings (Goal, Why, Context, Interface, Files in
-scope, Non-goals, Definition of done, Blocked by, Size). A section is **not
-ready** if it is empty, still holds the template's placeholder text, or — for
-Interface — has no code block with real signatures. `issue-lint`
+scope, Non-goals, Definition of done, Blocked by; Size is optional). A section is
+**not ready** if it is empty, still holds the template's placeholder text, or —
+for Interface — has no code block with real signatures; the issue is not ready
+if Size is ticked *Too big*. `issue-lint`
 (`.claude/bin/pipeline lint <N>`) applies the same bar and prints what is
 missing.
 

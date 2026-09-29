@@ -23,19 +23,32 @@ Copy these into the project root, keeping the paths:
 | `.claude/bin/` | `pipeline` and `gh-reviewer` shims |
 | `.claude/pipeline/` | the decision logic, its config and tests |
 | `.claude/settings.json` | hook registration and pipeline permissions — **merge** with an existing one |
-| `.github/workflows/pr-contract.yml`, `issue-lint.yml` | as is |
+| `.github/workflows/pr-contract.yml`, `issue-lint.yml`, `portability.yml` | as is (`portability.yml` is optional: it tests the hooks on macOS and Windows) |
 | `.github/workflows/ci.yml` | **merge**: your build/test job must be named `ci`, plus the `tooling` job |
 | `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | as is |
 | `.gitattributes` | **merge** the script lines |
 | `CONTRIBUTING-agents.md` | the contract — fill in *Project rules* |
 | `docs/Pipeline.md`, `docs/AgentEnvironment.md`, `docs/ROADMAP.md` | edit the last two |
 | `CLAUDE.md` | **merge** the pipeline sections into yours |
+| `run_tests.sh` | the single test entry point: keep its contract (first line says what ran, exit code is the result), replace its body with your suite — or point `test_command` at yours |
+
+Copy without overwriting anything the project already has, then merge those
+files by hand:
 
 ```bash
 # from a clone of this repository, into ../my-project:
-cp -r .claude .github CONTRIBUTING-agents.md docs ../my-project/
-# then merge CLAUDE.md, .gitattributes, settings.json and ci.yml by hand
+cp -rn .claude .github CONTRIBUTING-agents.md docs run_tests.sh ../my-project/
+# -n keeps every file the project already has. Merge by hand at least
+# CLAUDE.md, .gitattributes, .claude/settings.json and .github/workflows/ci.yml
+# -- `diff -r . ../my-project` lists what differs.
 ```
+
+On Windows, commit `.gitattributes` first. Files checked out before it existed
+keep CRLF endings, which Git Bash runs but Linux CI does not
+(`$'\r': command not found`). With a clean working tree, renormalise once:
+`git add --renormalize .` and commit. (`git checkout -- .` afterwards also
+rewrites the working copies — and discards uncommitted edits, so only on a
+clean tree.)
 
 Add `.claude/worktrees/`, `.claude/tmp/` and `.claude/settings.local.json` to
 `.gitignore`.
