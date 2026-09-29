@@ -68,10 +68,12 @@ flowchart LR
 
 ### What reaches the owner
 
-Only `status:needs-human`: design contradictions, second escalations after
-triage, PRs that used all their fix passes, `human-decision` and `asset` issues,
-and roadmap steps marked as human gates. The kill switch is one label:
-`pipeline:pause` on any open issue.
+The tick's *Needs you* list, nothing else: design contradictions, second
+escalations after triage, PRs that used all their fix or conflict passes,
+reviews that never reach a verdict, CI that never finishes, `human-decision` and
+`asset` issues, anything touching the pipeline's own files, PRs from forks or
+bound to no issue, a red default branch, and roadmap steps marked as human
+gates. The kill switch is one label: `pipeline:pause` on any open issue.
 
 ---
 

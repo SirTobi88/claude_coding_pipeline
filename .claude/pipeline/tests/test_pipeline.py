@@ -131,10 +131,46 @@ def lint_with(states=None):
                                  lambda n: states.get(n, "closed"))
 
 
-def run(issues=(), prs=(), reviewer=REVIEWER, branches=(), states=None):
-    snap = {"now": NOW, "issues": list(issues), "prs": list(prs),
-            "reviewer_login": reviewer, "remote_branches": set(branches)}
-    return p.decide(snap, fake_allowlist, lint_with(states))
+# The shipped defaults, not whatever config.json a project set: a project that
+# raises a limit must not turn these tests red.
+LIM = p.Limits.from_config(p.DEFAULT_CONFIG["limits"])
+
+
+def run(issues=(), prs=(), reviewer=REVIEWER, branches=(), states=None, auto_issues=True, **snap):
+    """decide() over a snapshot. Every PR's agent/<N>- issue is added, in review,
+    unless the test brings its own -- a PR without its issue is its own case."""
+    issues = list(issues)
+    if auto_issues:
+        have = {i["number"] for i in issues}
+        for pr_ in prs:
+            n = p.branch_issue(pr_.get("headRefName", ""))
+            if n and n not in have:
+                issues.append(issue(n, [p.AGENT_TASK, p.IN_REVIEW]))
+                have.add(n)
+    base = {"now": NOW, "issues": issues, "prs": list(prs), "reviewer_login": reviewer,
+            "remote_branches": set(branches) if branches is not None else None, "limits": LIM}
+    base.update(snap)
+    return p.decide(base, fake_allowlist, lint_with(states))
+
+
+def owners(plan):
+    """Everything the plan says about an item, as one string to search."""
+    return " ".join(plan.waiting + plan.in_flight + plan.awaiting_human + plan.deferred
+                    + [o.get("why", "") for o in plan.ops])
+
+
+def assert_every_pr_has_an_owner(test, plan, prs):
+    """The invariant docs/Pipeline.md is built on: every open item ends a tick
+    dispatched, in flight, waiting, deferred or with the owner -- and no item
+    is handed to two agents at once."""
+    said = owners(plan)
+    handled = {d["pr"] for d in plan.dispatch if d.get("pr")}
+    for x in prs:
+        test.assertTrue(x["number"] in handled or f"PR #{x['number']}" in said,
+                        f"PR #{x['number']} has no next owner: {plan.to_json()}")
+    keys = [("pr", d["pr"]) if d.get("pr") else ("issue", d.get("issue")) for d in plan.dispatch
+            if d.get("pr") or d.get("issue")]
+    test.assertEqual(len(keys), len(set(keys)), f"an item dispatched twice: {plan.dispatch}")
 
 
 def kinds(plan):
@@ -224,11 +260,57 @@ class OverlapTests(unittest.TestCase):
         self.assertFalse(p.paths_overlap("src/trade.py", "src/player.py"))
 
 
+def run_(name, conclusion="SUCCESS", status="COMPLETED", at="2026-09-27T11:00:00Z", wf="CI", run_id=1):
+    return {"__typename": "CheckRun", "name": name, "workflowName": wf, "status": status,
+            "conclusion": conclusion, "startedAt": at,
+            "detailsUrl": f"https://github.com/o/r/actions/runs/{run_id}/job/9"}
+
+
 class RollupTests(unittest.TestCase):
+    REQ = ("ci", "allowlist")
+
+    def test_a_missing_required_check_is_pending_not_green(self):
+        # Right after a push, ci finishes before pr-contract has even queued.
+        self.assertEqual(p.rollup_checks([run_("ci")], self.REQ)["state"], "pending")
+
+    def test_an_optional_failure_does_not_fail_the_pr(self):
+        rollup = [run_("ci"), run_("allowlist"), run_("lint-docs", "FAILURE")]
+        self.assertEqual(p.rollup_checks(rollup, self.REQ)["state"], "success")
+
+    def test_only_the_latest_run_of_a_check_counts(self):
+        # A description edit re-runs `contract`; the old failure must not stick.
+        rollup = [run_("ci"), run_("allowlist", "FAILURE", at="2026-09-27T10:00:00Z"),
+                  run_("allowlist", "SUCCESS", at="2026-09-27T10:05:00Z")]
+        self.assertEqual(p.rollup_checks(rollup, self.REQ)["state"], "success")
+        rollup[1], rollup[2] = rollup[2], rollup[1]      # the order of the list does not matter
+        self.assertEqual(p.rollup_checks(rollup, self.REQ)["state"], "success")
+
+    def test_a_queued_re_run_beats_the_failure_it_replaces(self):
+        # A queued run has no start time yet; the old failure must not win.
+        queued = run_("ci", "", status="QUEUED", at=None)
+        for rollup in ([run_("ci", "FAILURE"), queued, run_("allowlist")],
+                       [queued, run_("ci", "FAILURE"), run_("allowlist")]):
+            self.assertEqual(p.rollup_checks(rollup, self.REQ)["state"], "pending")
+
+    def test_a_cancelled_run_is_pending(self):
+        rollup = [run_("ci", "CANCELLED"), run_("allowlist")]
+        self.assertEqual(p.rollup_checks(rollup, self.REQ)["state"], "pending")
+
+    def test_failed_runs_carry_their_run_id(self):
+        out = p.rollup_checks([run_("ci", "FAILURE", run_id=77), run_("allowlist")], self.REQ)
+        self.assertEqual((out["state"], out["failed"]), ("failure", [{"name": "ci", "run": 77}]))
+
+    def test_the_review_status_counts_attempts_and_is_not_a_check(self):
+        rollup = [run_("ci"), run_("allowlist"),
+                  {"__typename": "StatusContext", "context": p.REVIEW_STATUS, "state": "SUCCESS",
+                   "description": "attempt 2", "createdAt": "2026-09-27T11:00:00Z"}]
+        out = p.rollup_checks(rollup, self.REQ)
+        self.assertEqual((out["state"], out["reviewAttempts"]), ("success", 2))
+
     def test_states(self):
-        ok = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        running = {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}
-        failed = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}
+        ok = {"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "SUCCESS"}
+        running = {"__typename": "CheckRun", "name": "b", "status": "IN_PROGRESS", "conclusion": ""}
+        failed = {"__typename": "CheckRun", "name": "c", "status": "COMPLETED", "conclusion": "FAILURE"}
         status_ok = {"__typename": "StatusContext", "state": "SUCCESS", "context": "x"}
         self.assertEqual(p.rollup_state([]), "pending")
         self.assertEqual(p.rollup_state([ok, status_ok]), "success")
@@ -275,7 +357,7 @@ class DecideIssueTests(unittest.TestCase):
         issues = [issue(n, [p.AGENT_TASK, p.READY], body=READY_BODY.replace("world.py", f"w{n}.py"))
                   for n in range(1, 6)]
         plan = run(issues)
-        self.assertEqual(len(plan.dispatch), p.MAX_PARALLEL_IMPLEMENT)
+        self.assertEqual(len(plan.dispatch), LIM.max_parallel_implement)
 
     def test_human_decision_and_asset_are_never_dispatched(self):
         plan = run([issue(5, [p.AGENT_TASK, p.READY, p.HUMAN_DECISION]),
@@ -287,14 +369,42 @@ class DecideIssueTests(unittest.TestCase):
         plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS])], [pr(105, branch="agent/5-x", checks="pending")])
         self.assertEqual(ops(plan, "set-status")[0]["status"], p.IN_REVIEW)
 
-    def test_stale_in_progress_without_branch_is_reset(self):
+    def test_stale_in_progress_without_branch_is_reset_once(self):
         plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS], updated=OLD)])
         self.assertEqual(ops(plan, "set-status")[0]["status"], None)
+        self.assertEqual(ops(plan, "set-status")[0]["expect"], p.IN_PROGRESS)
         self.assertEqual(ops(plan, "lint")[0]["number"], 5)
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.ATTEMPT)
 
-    def test_stale_in_progress_with_branch_is_left_alone(self):
+    def test_stale_in_progress_with_a_pushed_branch_is_resumed(self):
+        # It used to stay "implementer working" forever: a branch, no PR, no one.
         plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS], updated=OLD)], branches={"agent/5-x"})
-        self.assertEqual(ops(plan), [])
+        self.assertEqual([(d["kind"], d.get("branch"), d.get("resume")) for d in plan.dispatch],
+                         [("implement", "agent/5-x", True)])
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.ATTEMPT)
+
+    def test_a_second_stale_end_escalates(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS, p.ATTEMPT], updated=OLD)],
+                   branches={"agent/5-x"})
+        self.assertEqual(plan.dispatch, [])
+        self.assertEqual(ops(plan, "set-status")[0]["status"], p.ESCALATED)
+        self.assertIn("agent/5-x", ops(plan, "comment")[0]["body"])
+
+    def test_a_second_stale_end_after_triage_goes_to_the_owner(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS, p.ATTEMPT, p.TRIAGED], updated=OLD)])
+        self.assertEqual(ops(plan, "set-status")[0]["status"], p.NEEDS_HUMAN)
+
+    def test_unknown_branches_leave_a_stale_claim_alone(self):
+        # git ls-remote failed: "no branch" would be a guess, and a wrong one
+        # starts a second implementer beside pushed work.
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS], updated=OLD)], branches=None)
+        self.assertEqual((plan.dispatch, ops(plan)), ([], []))
+        self.assertTrue(any("ls-remote" in x for x in plan.setup_problems))
+
+    def test_the_owner_holding_an_issue_is_never_reset(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS, p.HUMAN_HOLDS], updated=OLD)])
+        self.assertEqual((plan.dispatch, ops(plan)), ([], []))
+        self.assertTrue(any("owner holds" in x for x in plan.in_flight))
 
     def test_in_review_without_pr_escalates(self):
         plan = run([issue(5, [p.AGENT_TASK, p.IN_REVIEW])])
@@ -355,9 +465,16 @@ class DecidePrTests(unittest.TestCase):
         self.assertEqual(plan.dispatch, [])
         self.assertEqual(ops(plan, "add-label")[0]["label"], p.NEEDS_HUMAN)
 
-    def test_conflict_is_fixed_without_spending_a_round(self):
+    def test_conflict_passes_have_their_own_count(self):
         plan = run([], [pr(105, mergeable="CONFLICTING", labels=["fix-round-2"])])
-        self.assertEqual((plan.dispatch[0]["reason"], plan.dispatch[0]["round"]), ("conflict", 2))
+        d = plan.dispatch[0]
+        self.assertEqual((d["reason"], d["round"], d["round_label"]), ("conflict", 1, "conflict-round-1"))
+
+    def test_conflict_passes_run_out_too(self):
+        # They used to be free, so a conflict one pass could not resolve looped forever.
+        plan = run([], [pr(105, mergeable="CONFLICTING", labels=["conflict-round-1", "conflict-round-2"])])
+        self.assertEqual(plan.dispatch, [])
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.NEEDS_HUMAN)
 
     def test_changes_requested_at_head_is_fixed(self):
         plan = run([], [pr(105, reviews=[review("CHANGES_REQUESTED")])])
@@ -395,13 +512,28 @@ class DecidePrTests(unittest.TestCase):
         self.assertEqual(ops(plan, "remove-label")[0]["label"], p.WORKING)
         self.assertEqual(kinds(plan), [("review", 5, 105)])
 
-    def test_draft_and_needs_human_prs_are_skipped(self):
-        plan = run([], [pr(105, draft=True), pr(106, labels=[p.NEEDS_HUMAN])])
+    def test_needs_human_prs_are_skipped(self):
+        plan = run([], [pr(106, labels=[p.NEEDS_HUMAN])])
         self.assertEqual(plan.dispatch, [])
 
+    def test_a_draft_whose_issue_is_back_in_the_queue_is_finished(self):
+        # The draft an escalation left behind used to wait forever.
+        plan = run([], [pr(105, draft=True)])
+        self.assertEqual([(d["kind"], d["reason"]) for d in plan.dispatch], [("fix", "draft-resume")])
+
+    def test_a_draft_is_not_resumed_while_its_issue_is_in_progress(self):
+        # The implementer may be between opening the draft and escalating.
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_PROGRESS])], [pr(105, draft=True)])
+        self.assertEqual([d for d in plan.dispatch if d.get("pr")], [])
+
+    def test_a_draft_bound_to_no_issue_just_waits(self):
+        plan = run([], [pr(105, branch="wip/x", draft=True)])
+        self.assertEqual([d for d in plan.dispatch if d.get("pr")], [])
+        self.assertTrue(any("draft" in w for w in plan.waiting))
+
     def test_review_cap(self):
-        plan = run([], [pr(101 + k) for k in range(p.MAX_PARALLEL_REVIEW + 2)])
-        self.assertEqual(len(plan.dispatch), p.MAX_PARALLEL_REVIEW)
+        plan = run([], [pr(101 + k) for k in range(LIM.max_parallel_review + 2)])
+        self.assertEqual(len(plan.dispatch), LIM.max_parallel_review)
 
     def test_no_reviewer_identity_blocks_reviews_but_not_fixes(self):
         plan = run([], [pr(105), pr(106, checks="failure")], reviewer=None)
@@ -413,8 +545,248 @@ class DecidePrTests(unittest.TestCase):
         self.assertEqual(plan.dispatch, [])
 
 
+
+class PrFollowsItsIssueTests(unittest.TestCase):
+    """A PR moves only while its issue says it may (docs/Pipeline.md § Pull requests)."""
+
+    def test_escalated_issue_holds_its_pr(self):
+        # A fix pass escalated: triage and a second fix pass used to run in
+        # parallel, and the second burned the last round on the same wall.
+        rev = [review("CHANGES_REQUESTED")]
+        plan = run([issue(5, [p.AGENT_TASK, p.ESCALATED])], [pr(105, reviews=rev, labels=["fix-round-1"])])
+        self.assertEqual(kinds(plan), [("triage", 5, None)])
+        self.assertTrue(any("PR #105" in w and "triage" in w for w in plan.waiting))
+
+    def test_needs_human_issue_parks_its_pr(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.NEEDS_HUMAN])], [pr(105, checks="failure")])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("PR #105" in w for w in plan.awaiting_human))
+
+    def test_triage_answer_blocked_holds_the_pr_and_keeps_blocked(self):
+        # Triage blocked #5 on #7; the open PR used to override that to in-review.
+        body = READY_BODY.replace("nothing", "#7")
+        plan = run([issue(5, [p.AGENT_TASK], body=body), issue(7, [p.AGENT_TASK, p.IN_PROGRESS],
+                    body=scoped("src/other.py"))], [pr(105)], states={7: "open"})
+        self.assertEqual([o["status"] for o in ops(plan, "set-status")], [p.BLOCKED])
+        self.assertEqual([d for d in plan.dispatch if d.get("pr")], [])
+
+    def test_triage_answer_ready_sends_the_issue_back_to_review(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.TRIAGED])], [pr(105)])
+        self.assertEqual([o["status"] for o in ops(plan, "set-status")], [p.IN_REVIEW])
+        self.assertTrue(any("re-judged" in w for w in plan.waiting))
+
+    def test_a_pr_whose_issue_is_closed_goes_to_the_owner(self):
+        plan = run([], [pr(105)], auto_issues=False)
+        self.assertEqual([x for x in plan.dispatch if x.get("pr")], [])
+        self.assertTrue(any("#5 is closed" in w for w in plan.awaiting_human))
+
+    def test_but_not_when_the_survey_was_cut_short(self):
+        plan = run([], [pr(105)], auto_issues=False, truncated=True)
+        self.assertEqual(plan.awaiting_human, [])
+        self.assertTrue(plan.setup_problems)
+
+    def test_a_truncated_survey_does_not_escalate_in_review_issues(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.IN_REVIEW])], truncated=True)
+        self.assertEqual(ops(plan, "set-status"), [])
+
+    def test_a_second_pr_for_one_issue_goes_to_the_owner(self):
+        plan = run([], [pr(105), pr(106, branch="agent/5-again")])
+        self.assertEqual(kinds(plan), [("review", 5, 105)])
+        self.assertEqual([o["number"] for o in ops(plan, "add-label")], [106])
+
+    def test_the_owners_pr_is_reviewed_but_never_fixed_by_an_agent(self):
+        owned = issue(5, [p.AGENT_TASK, p.IN_REVIEW, p.HUMAN_HOLDS])
+        self.assertEqual(kinds(run([owned], [pr(105)])), [("review", 5, 105)])
+        plan = run([owned], [pr(105, checks="failure")])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("owner is working" in w for w in plan.awaiting_human))
+
+    def test_every_pr_has_an_owner(self):
+        prs = [pr(101), pr(102, checks="failure"), pr(103, draft=True), pr(104, checks="pending"),
+               pr(105, labels=[p.NEEDS_HUMAN]), pr(106, mergeable="CONFLICTING"),
+               pr(107, branch="chore/x"), dict(pr(108), crossRepo=True),
+               pr(109, labels=[p.WORKING]), pr(110, reviews=[review("APPROVED")], auto=True)]
+        plan = run([], prs)
+        assert_every_pr_has_an_owner(self, plan, prs)
+
+
+class ChecksTests(unittest.TestCase):
+    def test_a_first_failure_is_re_run_before_a_fix(self):
+        plan = run([], [dict(pr(105, checks="failure"),
+                             failedRuns=[{"name": "ci", "run": 9, "attempt": 1}])])
+        self.assertEqual(plan.dispatch, [])
+        self.assertEqual([(o["op"], o["run"]) for o in ops(plan, "rerun")], [("rerun", 9)])
+
+    def test_a_failure_after_a_re_run_gets_a_fix(self):
+        plan = run([], [dict(pr(105, checks="failure"),
+                             failedRuns=[{"name": "ci", "run": 9, "attempt": 2}])])
+        self.assertEqual(plan.dispatch[0]["reason"], "ci-failed")
+        self.assertEqual(ops(plan, "rerun"), [])
+
+    def test_ci_that_never_finishes_goes_to_the_owner(self):
+        old_head = (NOW - timedelta(hours=LIM.stale_waiting.total_seconds() / 3600 + 1)).isoformat()
+        plan = run([], [dict(pr(105, checks="pending"), headAt=old_head)])
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.NEEDS_HUMAN)
+
+    def test_a_re_run_on_an_old_commit_is_not_stuck(self):
+        # The tick re-ran a check on a commit from yesterday: the clock starts
+        # when the check did, not when the commit was made.
+        day_old = (NOW - timedelta(days=1)).isoformat()
+        plan = run([], [dict(pr(105, checks="pending"), headAt=day_old,
+                             checksSince=(NOW - timedelta(minutes=5)).isoformat())])
+        self.assertEqual(ops(plan, "add-label"), [])
+        self.assertTrue(any("CI running" in w for w in plan.waiting))
+
+    def test_jobs_of_one_run_are_re_run_once(self):
+        plan = run([], [dict(pr(105, checks="failure"),
+                             failedRuns=[{"name": "ci", "run": 9, "attempt": 1},
+                                         {"name": "tooling", "run": 9, "attempt": 1}])])
+        self.assertEqual([o["run"] for o in ops(plan, "rerun")], [9])
+
+    def test_an_approval_that_never_merges_goes_to_the_owner(self):
+        at = (NOW - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        plan = run([], [pr(105, reviews=[review("APPROVED", at=at)], auto=True)])
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.NEEDS_HUMAN)
+
+    def test_auto_merge_is_pinned_to_the_approved_head(self):
+        plan = run([], [pr(105, head="abc", reviews=[review("APPROVED")])])
+        self.assertEqual(ops(plan, "enable-automerge")[0]["head"], "abc")
+
+    def test_reviews_that_never_end_in_a_verdict_go_to_the_owner(self):
+        plan = run([], [dict(pr(105), reviewAttempts=LIM.max_review_attempts)])
+        self.assertEqual(plan.dispatch, [])
+        self.assertEqual(ops(plan, "add-label")[0]["label"], p.NEEDS_HUMAN)
+
+    def test_a_review_carries_its_head_and_attempt(self):
+        plan = run([], [dict(pr(105, head="abc"), reviewAttempts=1)])
+        d = plan.dispatch[0]
+        self.assertEqual((d["head"], d["attempt"]), ("abc", 2))
+
+    def test_comment_only_hand_off_explains_itself(self):
+        plan = run([], [pr(105, reviews=[review("COMMENTED"), review("COMMENTED")])])
+        self.assertIn("no verdict", ops(plan, "comment")[0]["body"])
+
+
+class MainHealthTests(unittest.TestCase):
+    RED = {"sha": "deadbeef00", "red": ["ci"]}
+
+    def test_red_main_holds_fixes_and_implementations_and_opens_one_issue(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.READY], body=scoped("src/new.py"))],
+                   [pr(105, checks="failure")], main=self.RED)
+        self.assertEqual(plan.dispatch, [])
+        self.assertEqual([o["op"] for o in plan.ops if o["op"] == "create-issue"], ["create-issue"])
+        self.assertTrue(any("is red" in w for w in plan.awaiting_human))
+
+    def test_the_red_issue_is_opened_once(self):
+        plan = run([issue(9, [p.MAIN_RED, p.NEEDS_HUMAN])], main=self.RED)
+        self.assertEqual(ops(plan, "create-issue"), [])
+
+    def test_green_again_closes_it(self):
+        plan = run([issue(9, [p.MAIN_RED, p.NEEDS_HUMAN])], main={"sha": "cafe", "red": [], "state": "success"})
+        self.assertEqual([o["number"] for o in ops(plan, "close-issue")], [9])
+
+    def test_still_running_does_not_close_it(self):
+        plan = run([issue(9, [p.MAIN_RED, p.NEEDS_HUMAN])], main={"sha": "cafe", "red": [], "state": "pending"})
+        self.assertEqual(ops(plan, "close-issue"), [])
+
+    def test_reviews_go_on_while_main_is_red(self):
+        plan = run([], [pr(105)], main=self.RED)
+        self.assertEqual(kinds(plan), [("review", 5, 105)])
+
+
+class LabelInvariantTests(unittest.TestCase):
+    def test_precedence_picks_the_status_that_stops_most(self):
+        self.assertEqual(p.status_of({p.READY, p.NEEDS_HUMAN}), p.NEEDS_HUMAN)
+        self.assertEqual(p.status_of({p.READY, p.IN_PROGRESS}), p.IN_PROGRESS)
+
+    def test_two_status_labels_are_normalised(self):
+        # The owner added needs-human by hand; ready stayed. It used to be
+        # dispatched anyway, and the claim deleted the owner's label.
+        plan = run([issue(5, [p.AGENT_TASK, p.READY, p.NEEDS_HUMAN])])
+        self.assertEqual([d for d in plan.dispatch if d.get("issue") == 5], [])
+        self.assertEqual(ops(plan, "set-status")[0]["status"], p.NEEDS_HUMAN)
+
+    def test_a_fresh_claim_on_a_ready_issue_is_respected(self):
+        # Triage is still finishing: its WORKING claim must stop an implementer.
+        plan = run([issue(5, [p.AGENT_TASK, p.READY, p.WORKING])])
+        self.assertEqual(plan.dispatch, [])
+
+    def test_a_stale_idea_claim_is_removed_before_the_next_planner(self):
+        plan = run([issue(7, [p.IDEA, p.WORKING], updated=OLD)])
+        self.assertEqual(ops(plan, "remove-label")[0]["label"], p.WORKING)
+        self.assertEqual(kinds(plan), [("plan", 7, None)])
+
+    def test_every_round_the_limits_allow_has_a_label(self):
+        for k in range(1, p.LIMITS.max_fix_rounds + 1):
+            self.assertIn(f"{p.FIX_ROUND}{k}", p.LABELS)
+        for k in range(1, p.LIMITS.max_conflict_rounds + 1):
+            self.assertIn(f"{p.CONFLICT_ROUND}{k}", p.LABELS)
+
+
+class CapTests(unittest.TestCase):
+    def test_fix_passes_are_capped(self):
+        # Five red PRs used to start five implementers at once.
+        plan = run([], [pr(101 + k, checks="failure") for k in range(5)])
+        self.assertEqual(len(plan.dispatch), LIM.max_parallel_fix)
+        self.assertEqual(sum("fix cap" in d for d in plan.deferred), 5 - LIM.max_parallel_fix)
+
+    def test_reviews_already_running_count_against_the_cap(self):
+        running = [pr(101 + k, labels=[p.WORKING, p.REVIEWING]) for k in range(LIM.max_parallel_review)]
+        plan = run([], running + [pr(110)])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("review cap" in d for d in plan.deferred))
+
+    def test_triage_is_capped(self):
+        issues = [issue(n, [p.AGENT_TASK, p.ESCALATED]) for n in range(1, 5)]
+        plan = run(issues)
+        self.assertEqual(len(plan.dispatch), LIM.max_parallel_triage)
+
+    def test_overlap_counts_an_escalated_issues_open_pr(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.ESCALATED]), issue(6, [p.AGENT_TASK, p.READY])], [pr(105)])
+        self.assertEqual([d for d in plan.dispatch if d.get("issue") == 6], [])
+
+    def test_overlap_counts_work_in_review(self):
+        # #6 shares a file with #5, whose PR may still get fix passes.
+        plan = run([issue(6, [p.AGENT_TASK, p.READY])], [pr(105)])
+        self.assertEqual([d for d in plan.dispatch if d.get("issue") == 6], [])
+        self.assertTrue(any("#6" in d for d in plan.deferred))
+
+    def test_one_planner_at_a_time(self):
+        plan = run([issue(7, [p.IDEA, p.WORKING]), issue(8, [p.IDEA])])
+        self.assertEqual(plan.dispatch, [])
+
+    def test_a_running_roadmap_planner_blocks_another(self):
+        plan = run([issue(9, [p.PLANNING, p.WORKING])])
+        self.assertEqual(plan.dispatch, [])
+
+    def test_a_stale_planning_issue_is_closed(self):
+        plan = run([issue(9, [p.PLANNING, p.WORKING], updated=OLD)])
+        self.assertEqual([o["number"] for o in ops(plan, "close-issue")], [9])
+
+    def test_a_tick_dispatches_at_most_the_cap(self):
+        lim = p.Limits(**{**LIM.__dict__, "max_dispatch_per_tick": 2, "max_parallel_fix": 9})
+        plan = run([], [pr(101 + k, checks="failure") for k in range(5)], limits=lim)
+        self.assertEqual(len(plan.dispatch), 2)
+        self.assertEqual(sum("dispatch cap" in d for d in plan.deferred), 3)
+
+    def test_an_idle_gate_is_reported(self):
+        plan = run([issue(9, [p.IDLE, p.NEEDS_HUMAN])])
+        self.assertTrue(any("roadmap gate" in w for w in plan.awaiting_human))
+
+
 @unittest.skipUnless(p.bash_path(), "bash not available")
 class RealParserTests(unittest.TestCase):
+    def test_a_parser_that_fails_raises_instead_of_reading_empty(self):
+        # A bash that cannot source the parser used to return [] silently, and
+        # every ready issue was linted needs-spec.
+        orig = p.SCOPE_LIB
+        try:
+            p.SCOPE_LIB = Path(__file__).parent / "no-such-parser.sh"
+            with self.assertRaises(RuntimeError):
+                p.parse_allowlist("## Files in scope\n\n- `a.py`\n")
+        finally:
+            p.SCOPE_LIB = orig
+
     def test_parser_reads_the_leading_token_only(self):
         body = ("## Files in scope\n\n- [ ] `src/a.py` (modify) -- not "
                 "`src/b.py`, that is #12's\n- `assets/ui/` (create)\n\n## Non-goals\n")
@@ -503,7 +875,9 @@ class PrAdmissionTests(unittest.TestCase):
 
     def test_a_pr_bound_to_no_issue_goes_to_the_owner(self):
         plan = run([], [pr(105, branch="chore/tidy")])
-        self.assertEqual(plan.dispatch, [])
+        self.assertEqual([d for d in plan.dispatch if d.get("pr")], [])
+        # ...and, not being pipeline work, does not keep the planner idle.
+        self.assertEqual([d["kind"] for d in plan.dispatch], ["plan"])
         self.assertTrue(any("PR #105" in w and "no issue" in w for w in plan.awaiting_human))
 
     def test_no_fix_pass_on_a_human_decision_issue(self):

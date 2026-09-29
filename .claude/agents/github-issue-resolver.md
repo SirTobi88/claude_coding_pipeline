@@ -49,7 +49,9 @@ question — then:
 
 If you already committed real work, push the branch and open the PR as a
 **draft** with the blocker as its first line, so the work survives the worktree.
-Triage answers the escalation; you are done.
+Once triage has answered, the pipeline sends a pass to finish that draft
+(`draft-resume`, below). In fix mode the PR stays as it is: the tick holds it
+while its issue is with triage. Then do § *Always, at the end*; you are done.
 
 ## Mode 1 — implement issue #N
 
@@ -60,12 +62,23 @@ gh issue view <N> --json number,title,body,url,state,labels
 That body is your contract. **Read only the design-doc sections its Context
 section names.**
 
-You land in a worktree on a harness-generated branch based on the default
-branch. Create your working branch before you commit anything:
+You land in a worktree whose checkout may be older than the default branch on
+GitHub. Start your branch from GitHub's, **before you change anything** — the
+allowlist guard binds from the moment the branch is `agent/<N>-…`, and not
+before:
 
 ```bash
-git checkout -b agent/<N>-<slug>
+git fetch origin <default>          # .claude/bin/pipeline config default_branch
+git checkout -b agent/<N>-<slug> origin/<default>
 ```
+
+If `git ls-remote --heads origin 'agent/<N>-*'` already lists that name — the
+branch of an earlier PR that was closed — pick another slug.
+
+**`Resume branch <branch>`** in your prompt means an earlier implementer pushed
+work there and stopped before opening a PR. Continue it instead of starting
+over: `git fetch origin <branch>` and `git checkout -b <branch> origin/<branch>`,
+read what is there against the issue, finish it, and open the PR as below.
 
 Implement. Then the definition of done — **watch every line pass**. Run the
 project's test command and judge it only by its exit code and its summary line,
@@ -73,6 +86,12 @@ never by grepping its output for "error" (negative-path tests print errors on
 purpose). Quote the summary and what produced it (tool and version) in the PR.
 If you genuinely cannot run a line on this machine, write that in *Not
 verified*; CI runs the suite on every push either way.
+
+A line that still fails after a real attempt is not a reason to stop without a
+PR, nor to claim it passed. Open the PR anyway — ready, not draft — with the
+failing output quoted under *Not verified*; CI routes it to a fix pass. An
+honest red PR is a normal step; a false "verified" is a contract failure.
+Every run of this mode ends in `status:in-review` or `status:escalated`.
 
 Stage **explicit paths**, never `git add -A`. Conventional commit message
 (`feat(area):`, `fix(area):`, `test(area):` …). Push and open the PR:
@@ -95,31 +114,43 @@ are checked by CI (`contract`), and `Closes #<N>` is checked by the
 ## Mode 2 — fix PR #P
 
 ```bash
-gh pr view <P> --json number,headRefName,body,url,labels,mergeable
+gh pr view <P> --json number,headRefName,body,url,labels,mergeable,isDraft
 git fetch origin <headRefName>
-git checkout -B <headRefName> origin/<headRefName>
+git checkout -B agent/<N>-fix-<P> origin/<headRefName>
 ```
 
-The issue is the number in `agent/<N>-…`; its **Files in scope** still binds
-you, exactly as it bound the original author.
+The local name differs from `<headRefName>` because the worktree that opened
+the PR may still hold that branch; any `agent/<N>-…` name keeps the allowlist
+guard on. The issue is the number in `agent/<N>-…`; its **Files in scope**
+still binds you, exactly as it bound the original author.
 
-- **`ci-failed`** — find what failed: `gh pr checks <P>`, then
-  `gh run view <run-id> --log-failed`. Fix the cause, not the test.
+- **`ci-failed`** — the tick already re-ran it once, so it failed twice. Find
+  what failed: `gh pr checks <P>`, then `gh run view <run-id> --log-failed`.
+  By job: `ci`, `tooling` — fix the cause, not the test. `contract` — fix the
+  description with `gh pr edit <P> --body-file .claude/tmp/pr-<N>.md`.
+  `allowlist` — revert the out-of-scope change; if the file genuinely belongs to
+  the work, escalate.
 - **`review`** — the reviewer bot's latest *changes requested* review and its
   inline comments are your task list:
   `gh api repos/{owner}/{repo}/pulls/<P>/reviews` and
   `gh api repos/{owner}/{repo}/pulls/<P>/comments`. Do what they ask. If a
   requested change needs a file outside the allowlist or a design decision,
   escalate on the issue (above) instead — do not half-do it.
-- **`conflict`** — merge the default branch (`git merge origin/<default>`),
-  resolve, keep both sides' intent. Never resolve a conflict by dropping the
-  default branch's change.
+- **`conflict`** — fetch and merge the default branch
+  (`git fetch origin <default>`, `git merge origin/<default>`), resolve, keep
+  both sides' intent. Never resolve a conflict by dropping the default
+  branch's change. If the push is refused because the merge brings in a
+  workflow change, escalate: the owner updates that branch.
+- **`draft-resume`** — an earlier pass escalated and left this PR as a draft,
+  and triage has answered on the issue (read its latest comments and the
+  current body). Finish the work, run the definition of done, bring the
+  description up to date, and mark it ready: `gh pr ready <P>`.
 
 Run the test command, commit with explicit paths (`fix(<area>): …`), and push
-to the same branch:
+to the PR's branch:
 
 ```bash
-git push origin <headRefName>
+git push origin HEAD:<headRefName>
 ```
 
 Never force-push. Then leave one PR comment saying what you changed for which
@@ -128,7 +159,7 @@ finding. Do not edit the PR description's claims unless they became untrue.
 ## Always, at the end
 
 ```bash
-.claude/bin/pipeline release pr <P>      # fix mode only
+.claude/bin/pipeline release pr <P>      # fix mode only -- escalated or not
 ```
 
 **Never merge and never approve.** You authored this branch, so you are not its

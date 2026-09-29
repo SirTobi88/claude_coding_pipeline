@@ -10,8 +10,15 @@
   "limits": {
     "max_parallel_implement": 3,
     "max_parallel_review": 2,
+    "max_parallel_fix": 3,
+    "max_parallel_triage": 2,
+    "max_dispatch_per_tick": 8,
     "max_fix_rounds": 2,
+    "max_conflict_rounds": 2,
+    "max_review_attempts": 2,
+    "max_comment_only_reviews": 2,
     "stale_in_progress_hours": 6,
-    "stale_working_hours": 4
+    "stale_working_hours": 4,
+    "stale_waiting_hours": 12
   }
 }
