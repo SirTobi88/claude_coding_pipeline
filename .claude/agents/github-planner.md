@@ -87,5 +87,13 @@ The body names the gate, what the owner has to do to open it, and what the
 planner will plan once it is open. The tick stops asking you for roadmap work
 until the owner closes that issue.
 
+**Either way, finish** by closing the planning issue your prompt names
+(`Planning issue #<T>`): it is the claim that keeps a second roadmap planner
+from starting beside you.
+
+```bash
+gh issue close <T> --comment "Planned: #<a>, #<b> ..."      # or: "Stopped at the gate in #<idle>"
+```
+
 Return: the mode, the issues you filed (number and title), and — in roadmap
 mode — the step you planned or the gate you stopped at.

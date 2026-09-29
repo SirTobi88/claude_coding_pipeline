@@ -34,9 +34,14 @@ docs, token path, limits) live in `.claude/pipeline/config.json`.
 
 ## States
 
-GitHub labels are the state. There is no local state file, no worktree scan, no
-branch-name inference: any machine, or a phone, sees exactly what the pipeline
-sees.
+GitHub labels are the state. There is no local state file and no worktree
+scan: any machine, or a phone, sees exactly what the pipeline sees. The one
+exception is deliberate: a claim that went stale is judged by whether its
+`agent/<N>-` branch exists on GitHub, because pushed work must not be started
+over beside.
+
+`decide()` in `.claude/pipeline/pipeline.py` is the executable form of this
+section; its tests replay each row.
 
 ### Issues (`agent-task`)
 
@@ -46,56 +51,115 @@ sees.
             └──────┬────────────────────────────────────────┬──────────────────────┘
                    │ triage repairs the spec                │ tick claims it
                    ▼                                        ▼
-            status:ready                          status:in-progress ──▶ status:in-review ──▶ closed by merge
-                                                          │                     │
-                                                          ▼                     ▼ PR closed unmerged
-                                                  status:escalated ◀────────────┘
-                                                          │ triage answers once
-                                                          ├──▶ status:ready / status:blocked
-                                                          └──▶ status:needs-human   (second time, or a design decision)
+            (none) ──▶ lint                       status:in-progress ──▶ status:in-review ──▶ closed by merge
+                                                   │   │    ▲ stale, no PR:     │   ▲
+                                                   │   │    │ resume / re-queue │   │ triage answered:
+                                                   │   └────┘ once (attempt-1)  │   │ lint → in-review
+                                                   ▼                            ▼   │ (or blocked)
+                                            status:escalated ◀── PR closed unmerged,
+                                                   │             ended twice without a PR
+                                                   │ triage answers once
+                                                   ├──▶ (none) → lint → ready / blocked / in-review
+                                                   └──▶ status:needs-human   (second time, or a design decision)
 ```
 
 | Label | Set by | Next owner |
 |---|---|---|
-| *(none)* | a new issue | issue-lint |
+| *(none)* | a new issue, triage | issue-lint, or the tick's lint |
 | `status:needs-spec` | issue-lint | triage |
 | `status:blocked` | issue-lint | issue-lint, when the blocker closes |
-| `status:ready` | issue-lint, triage | tick → implementer |
+| `status:ready` | issue-lint | tick → implementer |
 | `status:in-progress` | tick (the claim) | implementer |
 | `status:in-review` | implementer, tick | reviewer, via the PR |
 | `status:escalated` | implementer, tick | triage |
 | `status:needs-human` | triage, tick, reviewer, planner | **the owner** |
 
+**Exactly one status label.** When an issue carries two — you added
+`status:needs-human` without removing `status:ready`, or two writers raced —
+the one that stops the most counts (needs-human, escalated, in-review,
+in-progress, needs-spec, blocked, ready) and the tick removes the other. Every
+status the tick writes is compare-and-set: it re-reads the labels and writes
+nothing if the issue moved since the survey.
+
 Issue-lint owns only the first three. It never touches an issue that is in
-progress, in review, escalated or waiting on a human. A second escalation or
-spec rejection after triage has answered once (`triaged` label) goes straight to
-`status:needs-human`.
+progress, in review, escalated, waiting on a human, or held by an agent
+(`pipeline:working`). A second escalation or spec rejection after triage has
+answered once (`triaged` label) goes straight to `status:needs-human`.
+
+**An implementer that ends without a PR.** When `status:in-progress` has not
+moved for `stale_in_progress_hours`: if the issue's `agent/<N>-` branch is on
+GitHub, an implementer resumes that branch; if not, the issue goes back to
+lint. Either way it gets `attempt-1`. The second time, it is escalated — to
+the owner if triage has already answered once. While `git ls-remote` fails, no
+stale claim is touched.
+
+**Back from triage with a PR open.** Lint judges the repaired issue: blocked
+stays blocked and its PR waits; anything else returns to `status:in-review`,
+and the PR resumes.
 
 ### Pull requests
 
-| Condition at the PR's head commit | Next owner |
-|---|---|
-| draft | nobody — not ready |
-| merge conflict | implementer, fix pass (`conflict`, does not spend a round) |
-| CI running | wait |
-| CI failed | implementer, fix pass (`ci-failed`) |
-| CI green, no bot verdict at this commit | reviewer |
-| bot requested changes at this commit | implementer, fix pass (`review`) |
-| bot approved at this commit | GitHub auto-merge |
-| `status:needs-human` | **the owner** |
+A pull request moves only while its issue lets it. In order:
 
-A PR gets `max_fix_rounds` fix passes (default 2, labels `fix-round-1`,
-`fix-round-2`). One more failure labels it `status:needs-human`. Conflicts are
-mechanical and do not count. A verdict is only ever read **at the head commit**
-— an approval of an older commit means "review again", never "approved".
+| Condition | Next owner |
+|---|---|
+| from a fork | **the owner** — agents never review or fix an outsider's branch |
+| `status:needs-human` | **the owner** |
+| bound to no issue (no `agent/<N>-` branch, nothing it closes) | **the owner** (a draft just waits) |
+| a second open PR for the same issue | **the owner**, labelled `status:needs-human`: close one |
+| its issue is closed | **the owner**: close the PR, or reopen the issue |
+| its issue is `human-decision`, `asset`, or touches a control path | **the owner** (§ What stays with the owner) |
+| its issue is `needs-human` / escalated or needs-spec / blocked / being re-judged | the owner / wait for triage / wait for the blocker / wait one tick |
+| an agent holds it (`pipeline:working`, fresh) | that agent |
+| draft, its issue back in review | implementer, fix pass (`draft-resume`): finish it and mark it ready |
+| merge conflict | implementer, fix pass (`conflict`) — own count, `max_conflict_rounds` |
+| CI running | wait — until `stale_waiting_hours` after the newest required check started, then **the owner** |
+| CI failed, first attempt | the tick re-runs the failed runs once |
+| CI failed again | implementer, fix pass (`ci-failed`); waits while the default branch is red |
+| CI green, no bot verdict at this commit | reviewer — `max_review_attempts` per head, then **the owner** |
+| bot requested changes at this commit | implementer, fix pass (`review`) |
+| bot left only comments, `max_comment_only_reviews` times | **the owner** |
+| bot approved at this commit | GitHub auto-merge, pinned to that commit — **the owner** if it has not merged after `stale_waiting_hours` |
+
+"CI" means the `required_checks` and nothing else — exactly what branch
+protection judges. A required check that has not reported yet is pending, not
+green; an optional check that fails sends nothing to a fix pass; of several runs
+of one check, only the latest counts, and a cancelled one is pending.
+
+A PR gets `max_fix_rounds` fix passes (default 2, labels `fix-round-1`, …) and
+`max_conflict_rounds` conflict passes (`conflict-round-1`, …). One more
+failure labels it `status:needs-human`. When you hand such a PR back, remove
+`status:needs-human` **and** its round labels. A verdict is only ever read **at
+the head commit** — an approval of an older commit means "review again", never
+"approved". Each review dispatched is counted in a `pipeline/review` commit
+status on the head, so a new push starts the count again.
+
+Agents fix only their own branches: a PR whose issue the owner holds
+(`pipeline:human-holds`), or that closes an ordinary issue, is reviewed but
+never gets a fix pass — its failures go to the owner.
+
+### The default branch
+
+When a required check fails on the default branch's head, every PR's CI runs
+against broken code and a fix pass would chase a failure it did not cause. The
+tick opens one `pipeline:main-red` issue for the owner, holds `ci-failed` fix
+passes and new implementations — reviews and conflict passes go on — and closes
+the issue once the default branch is green again. With `strict: false`
+protection two individually green PRs can merge into a red default branch; this
+is where that surfaces.
 
 ### Markers
 
 | Label | Meaning |
 |---|---|
 | `pipeline:working` | An agent holds this issue or PR right now. The tick leaves it alone until it goes stale (`stale_working_hours`), then treats it as abandoned. |
+| `pipeline:reviewing` | With `pipeline:working` on a PR: the holder is the reviewer, so it counts against `max_parallel_review`, not `max_parallel_fix`. |
+| `pipeline:human-holds` | The owner works this issue by hand (`pipeline claim issue N --interactive`). Never reset, never sent a fix pass. `pipeline release issue N --hold` hands it back. |
+| `pipeline:planning` | The roadmap planner is running. It closes this issue when done; the tick closes it after `stale_working_hours`. |
+| `pipeline:main-red` | The default branch is red. Opened and closed by the tick. |
 | `pipeline:pause` | On **any** open issue: every tick does nothing. The kill switch — open an issue with it from your phone. |
-| `pipeline:idle` | The planner found nothing it may plan without a human. Roadmap planning stops until you close this issue. |
+| `pipeline:idle` | The planner found nothing it may plan without a human. Roadmap planning stops until you close this issue; the tick lists it under *Needs you*. |
+| `attempt-1` | An implementer ended once on this issue without a PR or an escalation. |
 | `idea` | Raw input for the planner. Any one-liner is enough. |
 | `spec-defect` | The review handed a PR back because the *issue* was underspecified. A countable signal for improving issues. |
 | `triaged` | Triage has answered this issue once. |
@@ -171,9 +235,10 @@ template does not do that yet.
 
 `/pipeline-tick` runs one cycle:
 
-1. `.claude/bin/pipeline run --apply` — surveys GitHub, applies bookkeeping
-   (lint results, stale claims, exhausted fix rounds, missing auto-merge),
-   **claims** each work item by label, and prints the dispatch list as JSON.
+1. `.claude/bin/pipeline run --apply` — surveys GitHub (issues, PRs, the
+   default branch's checks), applies bookkeeping (lint results, stale claims,
+   exhausted rounds, re-runs, missing auto-merge), **claims** each work item by
+   label, and prints the dispatch list as JSON.
    Its `setup_problems` also name what is wrong with the machine the tick runs
    on and that no pull request would show: a `.claude/settings.local.json`,
    uncommitted changes in the tick's checkout, a checkout not on the default
@@ -182,11 +247,33 @@ template does not do that yet.
 3. Reports: what was dispatched, what came back, and everything waiting on the
    owner.
 
-A claim is a label set *before* the agent starts, so an overlapping tick cannot
-hand the same item out twice. Limits (config): `max_parallel_implement`
-implementers and `max_parallel_review` reviewers at a time, one planner run per
-tick, and two issues whose **Files in scope** overlap are never in flight
-together.
+A claim is a label set *before* the agent starts. Each claim re-reads the item
+first and is skipped when another tick, an agent or a person has taken or moved
+it since the survey — so an overlapping tick loses the race instead of handing
+the same item out twice. The window between that read and the write is a
+second, not the survey's minute; two ticks that start in the same second can
+still collide, so schedule one tick, not several.
+
+Limits (`limits` in `.claude/pipeline/config.json`), each counting the agents
+already running as well as those this tick starts:
+
+| Limit | Default | What it bounds |
+|---|---|---|
+| `max_parallel_implement` | 3 | implementers on new issues |
+| `max_parallel_fix` | 3 | fix passes (ci-failed, review, conflict, draft-resume) |
+| `max_parallel_review` | 2 | reviewers |
+| `max_parallel_triage` | 2 | triage runs |
+| `max_dispatch_per_tick` | 8 | agents one tick starts, all kinds together |
+| `max_fix_rounds`, `max_conflict_rounds` | 2, 2 | passes per PR before the owner |
+| `max_review_attempts` | 2 | reviews at one head that end without a verdict |
+| `max_comment_only_reviews` | 2 | comment-only reviews at one head |
+| `stale_in_progress_hours`, `stale_working_hours` | 6, 4 | when a claim counts as abandoned |
+| `stale_waiting_hours` | 12 | CI that never finishes; an approval that never merges |
+
+One planner runs at a time — an idea, or the roadmap through its
+`pipeline:planning` issue — and two issues whose **Files in scope** overlap are
+never in flight together; an issue in review counts, since a fix pass on it
+edits the same files.
 
 `.claude/bin/pipeline run` without `--apply` is a dry run: it prints what a tick
 would do and changes nothing. How to schedule the real tick, and in which
@@ -210,9 +297,9 @@ other rule here would be advice.
 
 - Signed in as the owner, create a **fine-grained** personal access token.
   Repository access: **only this repository**. Permissions: Contents,
-  Issues and Pull requests read and write; Actions, Checks and Commit statuses
-  read. **No Administration, no Workflows.** Set an expiry, and a reminder to
-  renew it.
+  Issues, Pull requests, Actions (to re-run a failed check) and Commit
+  statuses (to count review attempts) read and write; Checks read. **No
+  Administration, no Workflows.** Set an expiry, and a reminder to renew it.
 - Make it the only credential the tick and its agents see: a separate OS user
   for the pipeline, logged in with `gh auth login --with-token < token-file`
   and `gh auth setup-git` (so `git push` uses it too), with no other GitHub

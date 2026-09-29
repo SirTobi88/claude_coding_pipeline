@@ -19,7 +19,7 @@ report the error verbatim in one line and stop — do not retry more than once.
 
 - `"paused": true` → report "paused (`pipeline:pause`)" and stop.
 - `setup_problems` → report them first; still dispatch whatever is listed.
-- `dispatch` empty → report the one-line summary below and stop.
+- `dispatch` empty → skip § 2 and go straight to § 3.
 
 ## 2. Spawn
 
@@ -30,16 +30,28 @@ them.
 
 | `kind` | `subagent_type` | Prompt |
 |---|---|---|
-| `implement` | `github-issue-resolver` | `Implement issue #<issue> ("<title>").` |
+| `implement` | `github-issue-resolver` | `Implement issue #<issue> ("<title>").` plus ` Resume branch <branch>.` when `resume` is true |
 | `fix` | `github-issue-resolver` | `Fix PR #<pr> on branch <branch> for issue #<issue>. Reason: <reason>. Fix round <round>.` |
 | `review` | `github-pr-reviewer` | `Review PR #<pr> (branch <branch>, issue #<issue>).` |
 | `triage` | `github-triage` | `Triage issue #<issue>. It is here because of <reason>.` |
-| `plan` | `github-planner` | `Mode: <mode>.` plus ` Idea issue #<issue>.` when `issue` is set |
+| `plan` | `github-planner` | `Mode: <mode>.` plus ` Idea issue #<issue>.` when `issue` is set, plus ` Planning issue #<tracking>.` when `tracking` is set |
 
-If an agent type is not available (agent definitions load at session start),
-say so in the report, then release its claim so the next tick can retry:
-`.claude/bin/pipeline release pr <pr>` for review/fix, `release issue <issue>`
-for triage/plan, and `set-status <issue> status:ready` for implement.
+**An agent type is not available** (agent definitions load at session start):
+say so in the report, then give back its claim, so the next tick can retry
+without having spent anything:
+
+| `kind` | Command |
+|---|---|
+| `review` | `.claude/bin/pipeline release pr <pr>` |
+| `fix` | `.claude/bin/pipeline release pr <pr> --round-label <round_label>` |
+| `implement` | `.claude/bin/pipeline set-status <issue> status:ready` — nothing when `resume` is true |
+| `triage`, `plan` with `issue` | `.claude/bin/pipeline release issue <issue>` |
+| `plan` with `tracking` | `gh issue close <tracking> --comment "planner not available"` |
+
+**An agent returned an error or stopped without saying what it did:** release
+only the hold — `.claude/bin/pipeline release pr <pr>` for review and fix,
+`release issue <issue>` for triage and plan — and never refund a round: the
+agent may have pushed before it failed.
 
 ## 3. Report
 
@@ -48,6 +60,6 @@ A short block, nothing else:
 - **Dispatched** — one line per agent: kind, number, and the result it returned (PR URL, verdict, escalation).
 - **Waiting / in flight / deferred** — counts, with numbers.
 - **Needs you** — every `awaiting_human` entry. This is the only list the owner has to act on.
-- Any `FAILED` line from `ops_done` or `claims`, verbatim.
+- Any `FAILED` or `SKIPPED` line from `ops_done` or `claims`, verbatim.
 
 If nothing was dispatched and nothing needs the owner, one line: "Pipeline idle."

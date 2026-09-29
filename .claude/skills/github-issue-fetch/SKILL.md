@@ -54,8 +54,13 @@ escalated, never guessed past — say so and stop.
 ```bash
 git fetch origin
 git worktree add .claude/worktrees/<N>-<slug> -b agent/<N>-<slug> origin/<default-branch>
-.claude/bin/pipeline claim issue <N>
+.claude/bin/pipeline claim issue <N> --interactive
 ```
+
+`--interactive` also labels the issue `pipeline:human-holds`: the tick then
+neither resets the claim when the work goes quiet for hours, nor sends an
+agent's fix pass to its pull request (the reviewer still reviews it). To hand
+the issue back to the pipeline, run `.claude/bin/pipeline release issue <N> --hold`.
 
 `<slug>` is a short kebab-case form of the title. Default to a worktree, never
 the parent checkout: a working tree holds one branch, and shared build caches

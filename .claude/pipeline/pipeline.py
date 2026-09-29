@@ -9,8 +9,8 @@ executable form. Everything project-specific lives in config.json beside it.
     pipeline.py run [--apply]           one tick: bookkeeping + the dispatch list (JSON)
     pipeline.py lint ISSUE [--apply]    readiness of one agent-task issue
     pipeline.py relint [--apply]        lint every open issue whose status lint owns
-    pipeline.py claim issue|pr N [--round K]
-    pipeline.py release issue|pr N      drop pipeline:working when an agent finishes
+    pipeline.py claim issue N [--interactive] | pr N [--round K]
+    pipeline.py release issue|pr N [--round-label L] [--hold]   drop a claim when an agent finishes
     pipeline.py set-status ISSUE STATUS set one status label (or "none"), dropping the rest
     pipeline.py check-pr-body           PR description shape, body on stdin (CI)
     pipeline.py setup-repo [--dry-run]  labels, repo settings, branch protection, bot access
@@ -59,9 +59,16 @@ DEFAULT_CONFIG = {
     "limits": {
         "max_parallel_implement": 3,
         "max_parallel_review": 2,
+        "max_parallel_fix": 3,
+        "max_parallel_triage": 2,
+        "max_dispatch_per_tick": 8,
         "max_fix_rounds": 2,
+        "max_conflict_rounds": 2,
+        "max_review_attempts": 2,
+        "max_comment_only_reviews": 2,
         "stale_in_progress_hours": 6,
         "stale_working_hours": 4,
+        "stale_waiting_hours": 12,
     },
 }
 
@@ -91,6 +98,10 @@ IN_REVIEW = "status:in-review"
 ESCALATED = "status:escalated"
 NEEDS_HUMAN = "status:needs-human"
 STATUSES = (READY, BLOCKED, NEEDS_SPEC, IN_PROGRESS, IN_REVIEW, ESCALATED, NEEDS_HUMAN)
+# Exactly one status label is the invariant. When an issue carries two -- the
+# owner added needs-human without removing ready, or two writers raced -- the
+# one that stops the most wins, and the tick removes the other.
+STATUS_PRECEDENCE = (NEEDS_HUMAN, ESCALATED, IN_REVIEW, IN_PROGRESS, NEEDS_SPEC, BLOCKED, READY)
 # Lint may move an issue between these on its own. Every other status belongs
 # to whoever set it, and lint never touches it.
 LINT_OWNED = {None, READY, BLOCKED, NEEDS_SPEC}
@@ -102,9 +113,18 @@ IDEA = "idea"
 PAUSE = "pipeline:pause"
 IDLE = "pipeline:idle"
 WORKING = "pipeline:working"
+REVIEWING = "pipeline:reviewing"
+HUMAN_HOLDS = "pipeline:human-holds"
+PLANNING = "pipeline:planning"
+MAIN_RED = "pipeline:main-red"
+ATTEMPT = "attempt-1"
 SPEC_DEFECT = "spec-defect"
 TRIAGED = "triaged"
 FIX_ROUND = "fix-round-"
+CONFLICT_ROUND = "conflict-round-"
+# A commit status on a pull request's head, one per review dispatched there.
+# Being a status, it belongs to that commit: a new push starts the count again.
+REVIEW_STATUS = "pipeline/review"
 
 LABELS = {
     READY: ("0e8a16", "Lint passed and nothing blocks it: an implementer may take it"),
@@ -118,10 +138,13 @@ LABELS = {
     PAUSE: ("000000", "On any open issue: every pipeline tick does nothing"),
     IDLE: ("ededed", "The planner found nothing it may plan without a human"),
     WORKING: ("c2e0c6", "An agent holds this right now; the next tick leaves it alone"),
+    REVIEWING: ("c2e0c6", "The agent holding this pull request is the reviewer"),
+    HUMAN_HOLDS: ("bfd4f2", "The owner is working this by hand; the pipeline neither resets nor fixes it"),
+    PLANNING: ("ededed", "The roadmap planner is running; closed when it finishes"),
+    MAIN_RED: ("b60205", "The default branch is red; fix passes wait until it is green"),
+    ATTEMPT: ("fbca04", "An implementer ended once without a PR or an escalation"),
     SPEC_DEFECT: ("e99695", "Review handed this back because the issue was underspecified"),
     TRIAGED: ("d4c5f9", "Triage has answered this once; a second escalation goes to a human"),
-    FIX_ROUND + "1": ("f9d0c4", "One fix pass has been dispatched for this pull request"),
-    FIX_ROUND + "2": ("f9d0c4", "Two fix passes have been dispatched; the next failure goes to a human"),
     AGENT_TASK: ("0052cc", "A single seam, sized for one coding agent and one branch"),
     ASSET: ("fef2c0", "Art or audio deliverable; never auto-assigned to an agent"),
     HUMAN_DECISION: ("b60205", "Needs a human judgement call; never handed to an agent"),
@@ -129,13 +152,48 @@ LABELS = {
 
 # --- limits ------------------------------------------------------------------
 
-_L = CONFIG["limits"]
-MAX_FIX_ROUNDS = int(_L["max_fix_rounds"])
-MAX_PARALLEL_IMPLEMENT = int(_L["max_parallel_implement"])
-MAX_PARALLEL_REVIEW = int(_L["max_parallel_review"])
-MAX_COMMENT_ONLY_REVIEWS = 2
-STALE_IN_PROGRESS = timedelta(hours=float(_L["stale_in_progress_hours"]))
-STALE_WORKING = timedelta(hours=float(_L["stale_working_hours"]))
+
+@dataclass(frozen=True)
+class Limits:
+    """config.json `limits`. decide() takes them from the snapshot, so tests
+    need not depend on whatever a project set in its config."""
+    max_parallel_implement: int
+    max_parallel_review: int
+    max_parallel_fix: int
+    max_parallel_triage: int
+    max_dispatch_per_tick: int
+    max_fix_rounds: int
+    max_conflict_rounds: int
+    max_review_attempts: int
+    max_comment_only_reviews: int
+    stale_in_progress: timedelta
+    stale_working: timedelta
+    stale_waiting: timedelta
+
+    @classmethod
+    def from_config(cls, raw: dict) -> "Limits":
+        return cls(**{k: int(raw[k]) for k in (
+            "max_parallel_implement", "max_parallel_review", "max_parallel_fix",
+            "max_parallel_triage", "max_dispatch_per_tick", "max_fix_rounds",
+            "max_conflict_rounds", "max_review_attempts", "max_comment_only_reviews")},
+            stale_in_progress=timedelta(hours=float(raw["stale_in_progress_hours"])),
+            stale_working=timedelta(hours=float(raw["stale_working_hours"])),
+            stale_waiting=timedelta(hours=float(raw["stale_waiting_hours"])))
+
+
+LIMITS = Limits.from_config(CONFIG["limits"])
+MAX_FIX_ROUNDS = LIMITS.max_fix_rounds
+MAX_PARALLEL_IMPLEMENT = LIMITS.max_parallel_implement
+MAX_PARALLEL_REVIEW = LIMITS.max_parallel_review
+STALE_IN_PROGRESS = LIMITS.stale_in_progress
+STALE_WORKING = LIMITS.stale_working
+
+# Round labels exist for every round the limits allow: a label the claim adds
+# must exist, or the claim fails every tick and the pull request never moves.
+for _k in range(1, max(LIMITS.max_fix_rounds, 1) + 1):
+    LABELS[f"{FIX_ROUND}{_k}"] = ("f9d0c4", f"Fix pass {_k} has been dispatched for this pull request")
+for _k in range(1, max(LIMITS.max_conflict_rounds, 1) + 1):
+    LABELS[f"{CONFLICT_ROUND}{_k}"] = ("f9d0c4", f"Conflict pass {_k} has been dispatched for this pull request")
 
 # Required checks, pinned to the GitHub Actions app so that a commit status
 # posted by hand under the same name cannot satisfy them. 15368 is GitHub
@@ -167,15 +225,16 @@ def labels_of(item: dict) -> set[str]:
 
 
 def status_of(labels: set[str]) -> str | None:
-    for s in STATUSES:
+    """The issue's status: with more than one label, the one that stops the most."""
+    for s in STATUS_PRECEDENCE:
         if s in labels:
             return s
     return None
 
 
-def fix_rounds(labels: set[str]) -> int:
-    rounds = [int(l[len(FIX_ROUND):]) for l in labels
-              if l.startswith(FIX_ROUND) and l[len(FIX_ROUND):].isdigit()]
+def fix_rounds(labels: set[str], prefix: str = FIX_ROUND) -> int:
+    rounds = [int(l[len(prefix):]) for l in labels
+              if l.startswith(prefix) and l[len(prefix):].isdigit()]
     return max(rounds, default=0)
 
 
@@ -241,15 +300,38 @@ def interface_has_code(text: str | None) -> bool:
 
 # --- allowlists (one parser: .claude/hooks/lib/issue_scope.sh) ------------------
 
-def bash_path() -> str | None:
-    # On Windows, PATH can put WSL's System32\bash.exe ahead of Git Bash. The
-    # parser needs a bash that sees this checkout's paths, so prefer Git's.
-    if os.name == "nt":
-        for candidate in (r"C:\Program Files\Git\bin\bash.exe",
-                          r"C:\Program Files\Git\usr\bin\bash.exe"):
-            if Path(candidate).exists():
-                return candidate
-    return shutil.which("bash")
+def bash_path(env=os.environ, which=shutil.which, exists=lambda p: Path(p).exists()) -> str | None:
+    """A bash that sees this checkout's paths.
+
+    On Windows, PATH can put WSL's System32\\bash.exe ahead of Git Bash, and WSL
+    cannot read `E:/...`. So: $PIPELINE_BASH if set, then the bash of the Git
+    whose `git` is on PATH (wherever it is installed), then the usual install
+    locations, then PATH -- never one under the Windows directory.
+    """
+    if env.get("PIPELINE_BASH"):
+        return env["PIPELINE_BASH"]
+    if os.name != "nt":
+        return which("bash")
+    candidates = []
+    git = which("git")
+    if git:
+        root = Path(git).resolve().parent
+        # <root>\cmd\git.exe, <root>\bin\git.exe, <root>\mingw64\bin\git.exe
+        for up in (root.parent, root.parent.parent):
+            candidates += [up / "bin" / "bash.exe", up / "usr" / "bin" / "bash.exe"]
+    for base in (env.get("ProgramFiles", r"C:\Program Files"),
+                 os.path.join(env.get("LOCALAPPDATA", ""), "Programs")):
+        candidates += [Path(base) / "Git" / "bin" / "bash.exe", Path(base) / "Git" / "usr" / "bin" / "bash.exe"]
+    found = which("bash")
+    if found:
+        candidates.append(Path(found))
+    windir = env.get("SystemRoot", r"C:\Windows").lower()
+    for c in candidates:
+        if str(c).lower().startswith(windir):
+            continue
+        if exists(str(c)):
+            return str(c)
+    return None
 
 
 def parse_allowlist(body: str) -> list[str]:
@@ -262,6 +344,11 @@ def parse_allowlist(body: str) -> list[str]:
         [bash, "-c", '. "$1"; scope_parse_allowlist', "_", lib],
         input=body or "", capture_output=True, text=True, encoding="utf-8",
     )
+    # A bash that cannot source the parser prints nothing, which would read as
+    # "names no path": every issue linted needs-spec, and the overlap guard off.
+    if proc.returncode != 0:
+        raise RuntimeError(f"the allowlist parser failed under {bash} "
+                           f"(exit {proc.returncode}): {proc.stderr.strip()[:200]}")
     return [p for p in proc.stdout.splitlines() if p.strip()]
 
 
@@ -349,7 +436,13 @@ def lint_body(number: int, body: str, allowlist_fn, state_fn) -> LintResult:
                               "prefer symbol names")
 
     for n in blocked_by_numbers(find_section(sections, "Blocked by"), number):
-        if state_fn(n) == "open":
+        state = state_fn(n)
+        if state == "unknown":
+            # A rate limit or a 502 is not "closed": treating it so would hand
+            # out work built on an interface that has not landed.
+            r.warnings.append(f"could not read #{n}; treated as still blocking")
+            r.blockers_open.append(n)
+        elif state == "open":
             r.blockers_open.append(n)
     return r
 
@@ -416,132 +509,317 @@ def latest_verdict(reviews: list[dict], reviewer: str | None, head: str) -> tupl
     return verdict, comments
 
 
+def approved_at(reviews: list[dict], reviewer: str | None, head: str) -> datetime | None:
+    """When the bot last approved this head."""
+    times = [parse_time(r.get("submitted_at")) for r in reviews
+             if (r.get("login") or "").lower() == (reviewer or "").lower()
+             and r.get("commit") == head and r.get("state") == "APPROVED"]
+    times = [t for t in times if t]
+    return max(times) if times else None
+
+
 def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
-    """One tick's plan from a snapshot. Pure: no GitHub, no clock but snap['now']."""
+    """One tick's plan from a snapshot. Pure: no GitHub, no clock but snap['now'].
+
+    The snapshot: `now`, `issues`, `prs`, `reviewer_login`, `remote_branches`
+    (the agent/ branches on origin, or None when they could not be listed),
+    and optionally `paused`, `truncated` (a list was cut at its limit), `main`
+    ({"sha", "red": [failed required checks]} for the default branch, or None
+    when unknown) and `limits`.
+
+    Every open item ends the tick with a next owner: dispatched, in flight,
+    waiting on something named, deferred by a limit, or awaiting the owner.
+    docs/Pipeline.md § States is this function's contract.
+    """
     plan = Plan()
+    lim: Limits = snap.get("limits") or LIMITS
     now: datetime = snap["now"]
     issues: list[dict] = snap["issues"]
     prs: list[dict] = snap["prs"]
     reviewer = snap.get("reviewer_login")
-    remote_branches: set[str] = snap.get("remote_branches", set())
+    remote_branches = snap.get("remote_branches", set())
+    truncated = bool(snap.get("truncated"))
+    main = snap.get("main") or {}
+    main_red = list(main.get("red") or [])
 
-    if any(PAUSE in labels_of(i) for i in issues):
+    if snap.get("paused") or any(PAUSE in labels_of(i) for i in issues):
         plan.paused = True
         return plan
     if not reviewer:
         plan.setup_problems.append(
             f"reviewer bot login unknown: no token at {CONFIG['reviewer_token_file']} "
             "and no PIPELINE_REVIEWER_LOGIN -- reviews and auto-merge are skipped")
+    if truncated:
+        plan.setup_problems.append(
+            "more open issues or pull requests than one survey reads: transitions that "
+            "would follow from something being absent (a closed PR, a closed issue) are "
+            "skipped this tick")
+    if remote_branches is None:
+        plan.setup_problems.append(
+            "could not list agent/ branches on origin (git ls-remote failed): stale "
+            "implementer claims are left alone this tick")
 
     def stale(item: dict, age: timedelta) -> bool:
         t = parse_time(item.get("updatedAt"))
         return t is None or now - t > age
 
+    def fresh_working(item: dict) -> bool:
+        return WORKING in labels_of(item) and not stale(item, lim.stale_working)
+
+    def issue_status(n: int, status: str | None, expect, why: str) -> None:
+        # `expect` is the status this tick saw. apply_ops re-reads the labels
+        # and skips the write when someone moved the issue in the meantime.
+        plan.ops.append({"op": "set-status", "number": n, "status": status,
+                         "expect": expect, "why": why})
+
+    def comment(kind: str, n: int, body: str) -> None:
+        plan.ops.append({"op": "comment", "kind": kind, "number": n, "body": body})
+
+    def pr_to_owner(n: int, why: str, text: str) -> None:
+        plan.ops.append({"op": "add-label", "kind": "pr", "number": n, "label": NEEDS_HUMAN,
+                         "why": why})
+        comment("pr", n, f"**Pipeline:** {text} Handing this to a human (`{NEEDS_HUMAN}`).")
+        plan.awaiting_human.append(f"PR #{n}: {why}")
+
+    issue_by_n = {i["number"]: i for i in issues}
+    count = {"fix": 0, "review": 0, "triage": 0}
+    sha7 = (main.get("sha") or "")[:7]
+
+    # ---- the default branch ----
+    main_issue = next((i for i in issues if MAIN_RED in labels_of(i)), None)
+    if main_red:
+        plan.awaiting_human.append(
+            f"{DEFAULT_BRANCH} is red at {sha7} ({', '.join(main_red)}): fix passes and new "
+            "implementations wait until it is green")
+        if main_issue is None:
+            plan.ops.append({
+                "op": "create-issue", "labels": [MAIN_RED, NEEDS_HUMAN],
+                "title": f"[pipeline] {DEFAULT_BRANCH} is red at {sha7}",
+                "body": (f"**Pipeline:** the required checks {', '.join(main_red)} fail on "
+                         f"`{DEFAULT_BRANCH}` at {main.get('sha')}. Every pull request's CI "
+                         "runs against it, so the pipeline holds fix passes and new "
+                         "implementations until it is green again, and closes this issue then."),
+                "why": f"{DEFAULT_BRANCH} red"})
+    elif main_issue is not None and main.get("state") == "success":
+        # Only green closes it: a head whose checks are still running is not
+        # proof that the breakage is gone.
+        plan.ops.append({"op": "close-issue", "number": main_issue["number"],
+                         "body": f"**Pipeline:** `{DEFAULT_BRANCH}` is green again at {sha7}.",
+                         "why": f"{DEFAULT_BRANCH} green"})
+
     # ---- pull requests ----
-    open_pr_by_issue: dict[int, dict] = {}
-    open_issue_by_number = {i["number"]: i for i in issues}
-    reviews_planned = 0
+    pr_issue: dict[int, int | None] = {}
+    by_issue: dict[int, list[dict]] = {}
+    for pr in prs:
+        if pr.get("crossRepo"):
+            continue
+        n_i = branch_issue(pr.get("headRefName", "")) or next(iter(pr.get("closingIssues") or []), None)
+        pr_issue[pr["number"]] = n_i
+        if n_i:
+            by_issue.setdefault(n_i, []).append(pr)
+    open_pr_by_issue = {n_i: min(ps, key=lambda p: p["number"]) for n_i, ps in by_issue.items()}
+    reviews_running = sum(1 for p in prs if fresh_working(p) and REVIEWING in labels_of(p))
+    fixes_running = sum(1 for p in prs if fresh_working(p) and REVIEWING not in labels_of(p))
+
     for pr in sorted(prs, key=lambda p: p["number"]):
         n = pr["number"]
         tag = f"PR #{n}"
+        labels = labels_of(pr)
         if pr.get("crossRepo"):
             # A fork's branch is nobody's claim, whatever it is called; its
             # code is an outsider's. Agents neither review nor fix it.
             plan.awaiting_human.append(f"{tag}: from a fork -- review it yourself")
             continue
-        issue_n = branch_issue(pr.get("headRefName", "")) or next(iter(pr.get("closingIssues") or []), None)
-        if issue_n:
-            open_pr_by_issue[issue_n] = pr
-        labels = labels_of(pr)
-        if pr.get("isDraft"):
-            plan.waiting.append(f"{tag}: draft")
-            continue
+        issue_n = pr_issue.get(n)
         if NEEDS_HUMAN in labels:
             plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
             continue
         if not issue_n:
-            # No issue, no allowlist, no contract to review against.
-            plan.awaiting_human.append(f"{tag}: bound to no issue -- review it yourself "
-                                       "(github-pr-review skill)")
+            if pr.get("isDraft"):
+                plan.waiting.append(f"{tag}: draft")
+            else:
+                # No issue, no allowlist, no contract to review against.
+                plan.awaiting_human.append(f"{tag}: bound to no issue -- review it yourself "
+                                           "(github-pr-review skill)")
             continue
-        owner_issue = open_issue_by_number.get(issue_n)
-        if owner_issue is not None:
-            held = labels_of(owner_issue) & {HUMAN_DECISION, ASSET}
-            scope = _safe_scope(allowlist_fn, owner_issue.get("body", ""))
-            if held or (scope != ["*"] and control_paths_touched(scope)):
-                # The owner's work: an agent pass on it could edit the files
-                # only the owner may (docs/Pipeline.md § What stays with the owner).
-                plan.awaiting_human.append(f"{tag}: works owner-held issue #{issue_n} -- "
-                                           "review and fix it yourself")
+        first = open_pr_by_issue[issue_n]
+        if first is not pr:
+            pr_to_owner(n, f"a second open PR for #{issue_n}",
+                        f"#{first['number']} already works #{issue_n}; two branches on one "
+                        "issue collide. Close one of them.")
+            continue
+        issue = issue_by_n.get(issue_n)
+        if issue is None:
+            if truncated:
+                plan.waiting.append(f"{tag}: issue #{issue_n} not in this survey")
+            else:
+                plan.awaiting_human.append(
+                    f"{tag}: its issue #{issue_n} is closed -- close the PR, or reopen the issue")
+            continue
+        ilabels = labels_of(issue)
+        held = ilabels & {HUMAN_DECISION, ASSET}
+        scope = _safe_scope(allowlist_fn, issue.get("body", ""))
+        if held or (scope != ["*"] and control_paths_touched(scope)):
+            # The owner's work: an agent pass on it could edit the files only
+            # the owner may (docs/Pipeline.md § What stays with the owner).
+            plan.awaiting_human.append(f"{tag}: works owner-held issue #{issue_n} -- "
+                                       "review and fix it yourself")
+            continue
+        agent_issue = AGENT_TASK in ilabels
+        human_holds = HUMAN_HOLDS in ilabels
+        if agent_issue:
+            # The issue says whether its PR may move. Escalated means triage is
+            # rewriting the contract the PR is judged by; a fix pass now would
+            # work to the old one, and burn a round doing it.
+            istatus = status_of(ilabels)
+            if istatus == NEEDS_HUMAN:
+                plan.awaiting_human.append(f"{tag}: its issue #{issue_n} waits on you")
                 continue
+            if istatus in (ESCALATED, NEEDS_SPEC) or fresh_working(issue):
+                plan.waiting.append(f"{tag}: its issue #{issue_n} is with triage")
+                continue
+            if istatus == BLOCKED:
+                plan.waiting.append(f"{tag}: its issue #{issue_n} is blocked")
+                continue
+            if istatus not in (IN_PROGRESS, IN_REVIEW):
+                plan.waiting.append(f"{tag}: its issue #{issue_n} is being re-judged")
+                continue
+        # Agents fix only their own branches: an ordinary issue's PR is a
+        # person's, and so is one the owner holds.
+        fixable = agent_issue and not human_holds
+
         if WORKING in labels:
-            if not stale(pr, STALE_WORKING):
+            if not stale(pr, lim.stale_working):
                 plan.in_flight.append(f"{tag}: an agent holds it")
                 continue
             plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": WORKING,
                              "why": "stale pipeline:working"})
+            if REVIEWING in labels:
+                plan.ops.append({"op": "remove-label", "kind": "pr", "number": n,
+                                 "label": REVIEWING, "why": "stale claim"})
 
-        rounds = fix_rounds(labels)
         base = {"pr": n, "issue": issue_n, "branch": pr.get("headRefName")}
 
-        def fix(reason: str, counts: bool = True):
-            if counts and rounds >= MAX_FIX_ROUNDS:
-                plan.ops.append({"op": "add-label", "kind": "pr", "number": n, "label": NEEDS_HUMAN,
-                                 "why": f"{reason} after {rounds} fix rounds"})
-                plan.ops.append({"op": "comment", "kind": "pr", "number": n, "body":
-                                 f"**Pipeline:** {reason} again after {rounds} fix rounds. "
-                                 f"Handing this to a human (`{NEEDS_HUMAN}`)."})
-                plan.awaiting_human.append(f"{tag}: fix rounds exhausted ({reason})")
+        def fix(reason: str, prefix: str = FIX_ROUND, limit: int = lim.max_fix_rounds) -> None:
+            if not fixable:
+                who = (f"the owner is working #{issue_n}" if human_holds
+                       else "not an agent's branch")
+                plan.awaiting_human.append(f"{tag}: {reason} -- {who}")
                 return
+            rounds = fix_rounds(labels, prefix)
+            if rounds >= limit:
+                kind = "conflict passes" if prefix == CONFLICT_ROUND else "fix rounds"
+                pr_to_owner(n, f"{reason}: {kind} exhausted",
+                            f"{reason} again after {rounds} {kind}.")
+                return
+            if fixes_running + count["fix"] >= lim.max_parallel_fix:
+                plan.deferred.append(f"{tag}: fix cap ({lim.max_parallel_fix}) reached")
+                return
+            count["fix"] += 1
             plan.dispatch.append({**base, "kind": "fix", "agent": "github-issue-resolver",
-                                  "reason": reason,
-                                  "round": rounds + 1 if counts else rounds})
+                                  "reason": reason, "round": rounds + 1,
+                                  "round_label": f"{prefix}{rounds + 1}"})
 
+        if pr.get("isDraft"):
+            # A draft from an escalation whose issue is back in the queue: the
+            # work on it is kept, finished and marked ready -- otherwise it is
+            # a draft nobody ever picks up again.
+            # In review, not in progress: an in-progress issue may still have
+            # its implementer between opening the draft and escalating.
+            if fixable and status_of(ilabels) == IN_REVIEW:
+                fix("draft-resume")
+            else:
+                plan.waiting.append(f"{tag}: draft")
+            continue
         if pr.get("mergeable") == "CONFLICTING":
-            fix("conflict", counts=False)
+            fix("conflict", CONFLICT_ROUND, lim.max_conflict_rounds)
             continue
         checks = pr.get("checks", "pending")
         if checks == "pending":
-            plan.waiting.append(f"{tag}: CI running")
+            # Since the newest check started, or the head commit when none has:
+            # a re-run on an old commit is fresh work, not a stuck one.
+            since = parse_time(pr.get("checksSince") or pr.get("headAt"))
+            if since and now - since > lim.stale_waiting:
+                pr_to_owner(n, "required checks still not finished",
+                            f"the required checks have not finished in "
+                            f"{int((now - since).total_seconds() // 3600)} hours at "
+                            f"{pr.get('headRefOid', '')[:7]} -- a workflow that never started, "
+                            "or one waiting for approval?")
+            else:
+                plan.waiting.append(f"{tag}: CI running")
             continue
         if checks == "failure":
-            fix("ci-failed")
+            failed_runs = pr.get("failedRuns") or []
+            first_tries = [r for r in failed_runs if int(r.get("attempt") or 1) <= 1 and r.get("run")]
+            if failed_runs and len(first_tries) == len(failed_runs):
+                # One re-run before an agent run: a runner hiccup costs CI
+                # minutes, not a fix round -- and an `allowlist` failure that
+                # triage has since answered by widening the issue turns green.
+                # Jobs of one workflow share a run: re-run each run once.
+                for run_id in sorted({r["run"] for r in first_tries}):
+                    names = ", ".join(r.get("name") or "?" for r in first_tries if r["run"] == run_id)
+                    plan.ops.append({"op": "rerun", "kind": "pr", "number": n, "run": run_id,
+                                     "why": f"{names} failed on its first attempt"})
+                plan.waiting.append(f"{tag}: CI re-run")
+            elif main_red:
+                plan.waiting.append(f"{tag}: CI failed while {DEFAULT_BRANCH} is red")
+            else:
+                fix("ci-failed")
             continue
 
-        verdict, comment_only = latest_verdict(pr.get("reviews", []), reviewer, pr.get("headRefOid", ""))
         if not reviewer:
             plan.waiting.append(f"{tag}: CI green, no reviewer identity")
             continue
+        head = pr.get("headRefOid", "")
+        verdict, comment_only = latest_verdict(pr.get("reviews", []), reviewer, head)
         if verdict == "APPROVED":
             if pr.get("autoMerge"):
-                plan.waiting.append(f"{tag}: approved, auto-merge pending")
+                since = approved_at(pr.get("reviews", []), reviewer, head)
+                if since and now - since > lim.stale_waiting:
+                    pr_to_owner(n, "approved, but not merged",
+                                f"approved {int((now - since).total_seconds() // 3600)} hours "
+                                "ago with auto-merge on, and GitHub has not merged it.")
+                else:
+                    plan.waiting.append(f"{tag}: approved, auto-merge pending")
             else:
-                plan.ops.append({"op": "enable-automerge", "number": n,
+                plan.ops.append({"op": "enable-automerge", "number": n, "head": head,
                                  "why": "approved at head without auto-merge"})
             continue
         if verdict == "CHANGES_REQUESTED":
             fix("review")
             continue
-        if comment_only >= MAX_COMMENT_ONLY_REVIEWS:
-            plan.ops.append({"op": "add-label", "kind": "pr", "number": n, "label": NEEDS_HUMAN,
-                             "why": "reviewer left comments but no verdict, twice"})
-            plan.awaiting_human.append(f"{tag}: no verdict after {comment_only} reviews")
+        if comment_only >= lim.max_comment_only_reviews:
+            pr_to_owner(n, f"no verdict after {comment_only} reviews",
+                        f"the reviewer answered this head {comment_only} times with a comment "
+                        "and no verdict.")
             continue
-        if reviews_planned >= MAX_PARALLEL_REVIEW:
-            plan.deferred.append(f"{tag}: review cap ({MAX_PARALLEL_REVIEW}) reached")
+        attempts = int(pr.get("reviewAttempts") or 0)
+        if attempts >= lim.max_review_attempts:
+            pr_to_owner(n, f"review ended without a verdict {attempts} times",
+                        f"a review was dispatched {attempts} times at {head[:7]} and none "
+                        "submitted a verdict.")
             continue
-        reviews_planned += 1
+        if reviews_running + count["review"] >= lim.max_parallel_review:
+            plan.deferred.append(f"{tag}: review cap ({lim.max_parallel_review}) reached")
+            continue
+        count["review"] += 1
         plan.dispatch.append({**base, "kind": "review", "agent": "github-pr-reviewer",
-                              "reason": "CI green, no verdict at head"})
+                              "reason": "CI green, no verdict at head", "head": head,
+                              "attempt": attempts + 1})
 
     # ---- issues ----
-    planner_planned = False
     active_statuses = {READY, BLOCKED, NEEDS_SPEC, IN_PROGRESS, IN_REVIEW, ESCALATED}
     active = 0
     in_progress_scopes: list[list[str]] = []
+    review_scopes: list[list[str]] = []
     candidates: list[tuple[dict, list[str]]] = []
+    idea_candidates: list[int] = []
     idle_open = any(IDLE in labels_of(i) for i in issues)
     ideas_open = False
+    planner_busy = False
+    planning_open = False
+    triage_running = sum(1 for i in issues if AGENT_TASK in labels_of(i) and fresh_working(i)
+                         and status_of(labels_of(i)) in (ESCALATED, NEEDS_SPEC))
 
     for issue in sorted(issues, key=lambda i: i["number"]):
         n = issue["number"]
@@ -553,12 +831,29 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                 plan.awaiting_human.append(f"{tag}: idea waiting on an answer")
                 continue
             ideas_open = True
-            if WORKING in labels and not stale(issue, STALE_WORKING):
+            if fresh_working(issue):
                 plan.in_flight.append(f"{tag}: planner holds this idea")
-            elif not planner_planned:
-                planner_planned = True
-                plan.dispatch.append({"kind": "plan", "agent": "github-planner", "mode": "idea",
-                                      "issue": n, "reason": "idea waiting"})
+                planner_busy = True
+                continue
+            if WORKING in labels:
+                # Removed first, so the claim is a real label change that
+                # restarts the staleness clock.
+                plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
+                                 "label": WORKING, "why": "stale pipeline:working"})
+            idea_candidates.append(n)
+            continue
+        if PLANNING in labels:
+            if fresh_working(issue):
+                plan.in_flight.append(f"{tag}: roadmap planner running")
+                planner_busy = planning_open = True
+            else:
+                plan.ops.append({"op": "close-issue", "number": n,
+                                 "body": "**Pipeline:** the roadmap planner did not finish; "
+                                         "the next empty tick plans again.",
+                                 "why": "stale roadmap planning"})
+            continue
+        if IDLE in labels:
+            plan.awaiting_human.append(f"{tag}: roadmap gate (pipeline:idle) -- planning waits on you")
             continue
         if AGENT_TASK not in labels:
             continue
@@ -567,67 +862,111 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             continue
 
         status = status_of(labels)
+        if sum(1 for s in STATUSES if s in labels) > 1:
+            issue_status(n, status, status, "more than one status label")
         if status in active_statuses:
             active += 1
         pr = open_pr_by_issue.get(n)
+        if pr:
+            # Whatever the issue's state, its open PR may get another pass on
+            # these files: a new issue that shares one waits.
+            review_scopes.append(_safe_scope(allowlist_fn, issue.get("body", "")))
 
         if status == NEEDS_HUMAN:
             plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
-        elif status in (ESCALATED, NEEDS_SPEC):
-            if status == NEEDS_SPEC and pr:
-                plan.ops.append({"op": "set-status", "number": n, "status": IN_REVIEW,
-                                 "why": "a PR is open for it"})
-            elif WORKING in labels and not stale(issue, STALE_WORKING):
-                plan.in_flight.append(f"{tag}: triage holds it")
+            continue
+        if fresh_working(issue):
+            plan.in_flight.append(f"{tag}: an agent holds it")
+            continue
+        if WORKING in labels:
+            plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
+                             "label": WORKING, "why": "stale pipeline:working"})
+
+        if status in (ESCALATED, NEEDS_SPEC):
+            if TRIAGED in labels:
+                issue_status(n, NEEDS_HUMAN, status, f"{status} again after triage")
+                comment("issue", n, f"**Pipeline:** `{status}` a second time after triage. "
+                                    f"Handing this to a human (`{NEEDS_HUMAN}`).")
+                plan.awaiting_human.append(f"{tag}: {status} twice")
+            elif triage_running + count["triage"] >= lim.max_parallel_triage:
+                plan.deferred.append(f"{tag}: triage cap ({lim.max_parallel_triage}) reached")
             else:
-                if WORKING in labels:
-                    plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
-                                     "label": WORKING, "why": "stale pipeline:working"})
-                if TRIAGED in labels:
-                    plan.ops.append({"op": "set-status", "number": n, "status": NEEDS_HUMAN,
-                                     "why": f"{status} again after triage"})
-                    plan.ops.append({"op": "comment", "kind": "issue", "number": n, "body":
-                                     f"**Pipeline:** `{status}` a second time after triage. "
-                                     f"Handing this to a human (`{NEEDS_HUMAN}`)."})
-                    plan.awaiting_human.append(f"{tag}: {status} twice")
-                else:
-                    plan.dispatch.append({"kind": "triage", "agent": "github-triage", "issue": n,
-                                          "reason": status})
+                count["triage"] += 1
+                plan.dispatch.append({"kind": "triage", "agent": "github-triage", "issue": n,
+                                      "reason": status})
         elif status == IN_PROGRESS:
+            scope = _safe_scope(allowlist_fn, issue.get("body", ""))
             if pr:
-                plan.ops.append({"op": "set-status", "number": n, "status": IN_REVIEW,
-                                 "why": f"PR #{pr['number']} is open"})
-            elif stale(issue, STALE_IN_PROGRESS) and not any(
-                    b.startswith(f"agent/{n}-") for b in remote_branches):
-                plan.ops.append({"op": "set-status", "number": n, "status": None,
-                                 "why": "in progress for hours with no branch and no PR"})
-                plan.ops.append({"op": "lint", "number": n})
-            else:
-                in_progress_scopes.append(_safe_scope(allowlist_fn, issue.get("body", "")))
+                issue_status(n, IN_REVIEW, IN_PROGRESS, f"PR #{pr['number']} is open")
+            elif HUMAN_HOLDS in labels:
+                in_progress_scopes.append(scope)
+                plan.in_flight.append(f"{tag}: the owner holds it")
+            elif (not stale(issue, lim.stale_in_progress) or remote_branches is None
+                  or truncated):
+                in_progress_scopes.append(scope)
                 plan.in_flight.append(f"{tag}: implementer working")
+            else:
+                branches = sorted(b for b in remote_branches if b.startswith(f"agent/{n}-"))
+                where = f" Its branch: `{'`, `'.join(branches)}`." if branches else ""
+                if ATTEMPT in labels:
+                    # Ended twice without a PR or an escalation: something the
+                    # implementer cannot see is wrong. A third run would not help.
+                    target = NEEDS_HUMAN if TRIAGED in labels else ESCALATED
+                    issue_status(n, target, IN_PROGRESS, "implementer ended twice without a PR")
+                    comment("issue", n, "**Pipeline:** an implementer ended on this issue twice "
+                                        f"without opening a PR or escalating.{where} "
+                                        + ("Handing this to a human." if target == NEEDS_HUMAN
+                                           else "Triage decides what is wrong with it."))
+                    if target == NEEDS_HUMAN:
+                        plan.awaiting_human.append(f"{tag}: implementer ended twice")
+                elif branches:
+                    # Work was pushed and the implementer stopped before the
+                    # PR. Resume that branch rather than start over beside it.
+                    plan.ops.append({"op": "add-label", "kind": "issue", "number": n,
+                                     "label": ATTEMPT, "why": "implementer ended without a PR"})
+                    in_progress_scopes.append(scope)
+                    plan.dispatch.append({"kind": "implement", "agent": "github-issue-resolver",
+                                          "issue": n, "title": issue.get("title", ""),
+                                          "branch": branches[-1], "resume": True,
+                                          "reason": "resume a branch without a PR", "must": True})
+                else:
+                    plan.ops.append({"op": "add-label", "kind": "issue", "number": n,
+                                     "label": ATTEMPT, "why": "implementer ended without a PR"})
+                    issue_status(n, None, IN_PROGRESS,
+                                 "in progress for hours with no branch and no PR")
+                    plan.ops.append({"op": "lint", "number": n})
         elif status == IN_REVIEW:
-            if not pr:
-                plan.ops.append({"op": "set-status", "number": n, "status": ESCALATED,
-                                 "why": "its PR was closed without merging"})
-                plan.ops.append({"op": "comment", "kind": "issue", "number": n, "body":
-                                 "**Pipeline:** the pull request for this issue was closed "
-                                 "without merging while the issue stayed open. Triage decides "
-                                 "whether to re-run it, amend it, or close it."})
-        elif status in LINT_OWNED:
             if pr:
-                plan.ops.append({"op": "set-status", "number": n, "status": IN_REVIEW,
-                                 "why": f"PR #{pr['number']} is open"})
-                continue
+                pass
+            elif truncated:
+                plan.waiting.append(f"{tag}: its PR is not in this survey")
+            else:
+                issue_status(n, ESCALATED, IN_REVIEW, "its PR was closed without merging")
+                comment("issue", n, "**Pipeline:** the pull request for this issue was closed "
+                                    "without merging while the issue stayed open. Triage decides "
+                                    "whether to re-run it, amend it, or close it.")
+        elif status in LINT_OWNED:
             result: LintResult = lint_fn(issue)
             desired = result.status
+            if pr:
+                # Back from triage with its PR still open: the PR resumes, unless
+                # the answer was to wait for a blocker or the spec is still short.
+                target = desired if desired in (BLOCKED, NEEDS_SPEC) else IN_REVIEW
+                if target != status:
+                    issue_status(n, target, status, f"PR #{pr['number']} is open"
+                                 if target == IN_REVIEW else "; ".join(result.problems)
+                                 or f"blocked by #{', #'.join(map(str, result.blockers_open))}")
+                    if target == NEEDS_SPEC:
+                        comment("issue", n, lint_comment(n, result))
+                if target == BLOCKED:
+                    plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
+                continue
             if desired != status:
-                plan.ops.append({"op": "set-status", "number": n, "status": desired,
-                                 "why": "; ".join(result.problems) or
-                                        (f"blocked by #{', #'.join(map(str, result.blockers_open))}"
-                                         if result.blockers_open else "lint passed")})
+                issue_status(n, desired, status, "; ".join(result.problems) or
+                             (f"blocked by #{', #'.join(map(str, result.blockers_open))}"
+                              if result.blockers_open else "lint passed"))
                 if desired == NEEDS_SPEC:
-                    plan.ops.append({"op": "comment", "kind": "issue", "number": n,
-                                     "body": lint_comment(n, result)})
+                    comment("issue", n, lint_comment(n, result))
                 if desired in active_statuses and status not in active_statuses:
                     active += 1
             if desired == READY:
@@ -648,15 +987,20 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             elif desired == BLOCKED:
                 plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
 
-    slots = MAX_PARALLEL_IMPLEMENT - len(in_progress_scopes)
-    taken = list(in_progress_scopes)
+    # ---- new implementations ----
+    # The cap counts implementers; the overlap check also counts work whose PR
+    # is open -- a fix pass there edits the same files.
+    slots = lim.max_parallel_implement - len(in_progress_scopes)
+    taken = in_progress_scopes + review_scopes
     for issue, scope in candidates:
         tag = f"#{issue['number']}"
-        if slots <= 0:
-            plan.deferred.append(f"{tag}: implementer cap ({MAX_PARALLEL_IMPLEMENT}) reached")
+        if main_red:
+            plan.deferred.append(f"{tag}: {DEFAULT_BRANCH} is red")
             continue
-        clash = next((s for s in taken if scopes_overlap(scope, s)), None)
-        if clash is not None:
+        if slots <= 0:
+            plan.deferred.append(f"{tag}: implementer cap ({lim.max_parallel_implement}) reached")
+            continue
+        if any(scopes_overlap(scope, s) for s in taken):
             plan.deferred.append(f"{tag}: shares a file in Files in scope with work in flight")
             continue
         taken.append(scope)
@@ -665,10 +1009,29 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                               "issue": issue["number"], "title": issue.get("title", ""),
                               "reason": READY})
 
-    if (not plan.dispatch and active == 0 and not prs and not idle_open
-            and not ideas_open and not planner_planned):
+    # ---- planning: one planner at a time ----
+    if idea_candidates and not planner_busy:
+        planner_busy = True
+        plan.dispatch.append({"kind": "plan", "agent": "github-planner", "mode": "idea",
+                              "issue": idea_candidates[0], "reason": "idea waiting"})
+    pipeline_prs = [p for p in prs if not p.get("crossRepo") and NEEDS_HUMAN not in labels_of(p)
+                    and AGENT_TASK in labels_of(issue_by_n.get(pr_issue.get(p["number"]) or -1, {}))]
+    if (not plan.dispatch and active == 0 and not pipeline_prs and not idle_open
+            and not ideas_open and not planner_busy and not planning_open and not main_red):
         plan.dispatch.append({"kind": "plan", "agent": "github-planner", "mode": "roadmap",
                               "reason": "queue empty"})
+
+    # ---- one tick's budget ----
+    if len(plan.dispatch) > lim.max_dispatch_per_tick:
+        kept, room = [], lim.max_dispatch_per_tick - sum(1 for d in plan.dispatch if d.get("must"))
+        for d in plan.dispatch:
+            if d.get("must") or room > 0:
+                kept.append(d)
+                room -= 0 if d.get("must") else 1
+            else:
+                what = f"PR #{d['pr']}" if d.get("pr") else f"#{d.get('issue')}"
+                plan.deferred.append(f"{what}: dispatch cap ({lim.max_dispatch_per_tick}) reached")
+        plan.dispatch = kept
     return plan
 
 
@@ -683,6 +1046,15 @@ def _safe_scope(allowlist_fn, body: str) -> list[str]:
 
 class GhError(RuntimeError):
     pass
+
+
+class StaleState(GhError):
+    """The labels moved since the survey, so the write was not made."""
+
+
+ANY = object()      # set_status(expect=ANY): write whatever the issue's status is now
+ISSUE_LIMIT = 500   # open issues one survey reads
+PR_LIMIT = 200      # open pull requests one survey reads
 
 
 def reviewer_token_path() -> Path:
@@ -731,55 +1103,119 @@ class Gh:
 
     # reads
     def open_issues(self) -> list[dict]:
-        return self.json(["issue", "list", "--state", "open", "--limit", "300",
+        return self.json(["issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT),
                           "--json", "number,title,labels,body,updatedAt"]) or []
+
+    def paused(self) -> bool:
+        # Asked on its own, so the kill switch works however many issues are open.
+        return bool(self.json(["issue", "list", "--label", PAUSE, "--state", "open",
+                               "--limit", "1", "--json", "number"]))
 
     def issue(self, n: int) -> dict:
         return self.json(["issue", "view", str(n), "--json", "number,title,labels,body,updatedAt,state"])
 
+    def labels_now(self, kind: str, n: int) -> set[str]:
+        """An issue's or pull request's labels as they are now, not at the survey."""
+        return labels_of(self.json([kind if kind == "pr" else "issue", "view", str(n),
+                                    "--json", "labels"]) or {})
+
     def issue_state(self, n: int) -> str | None:
+        """open, closed, None (no such issue), or unknown (could not ask)."""
         try:
             data = self.json(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
             return (data or {}).get("state")
-        except GhError:
-            return None
+        except GhError as e:
+            text = str(e)
+            if "404" in text or "410" in text or "Not Found" in text:
+                return None
+            return "unknown"
 
     def open_prs(self) -> list[dict]:
-        raw = self.json(["pr", "list", "--state", "open", "--limit", "100", "--json",
+        raw = self.json(["pr", "list", "--state", "open", "--limit", str(PR_LIMIT), "--json",
                          "number,title,headRefName,headRefOid,isDraft,labels,mergeable,"
                          "updatedAt,statusCheckRollup,autoMergeRequest,closingIssuesReferences,"
                          "isCrossRepository"]) or []
         prs = []
         for p in raw:
-            # One page of 100: `--paginate` would print one JSON array per page,
-            # back to back, which is not a JSON document.
-            reviews = self.json(["api", f"repos/{{owner}}/{{repo}}/pulls/{p['number']}/reviews"
-                                        "?per_page=100"]) or []
-            prs.append({
+            pages = self.json(["api", "--paginate", "--slurp",
+                               f"repos/{{owner}}/{{repo}}/pulls/{p['number']}/reviews?per_page=100"]) or []
+            reviews = [r for page in pages for r in (page or [])]
+            checks = rollup_checks(p.get("statusCheckRollup") or [], REQUIRED_CHECKS)
+            item = {
                 "number": p["number"], "title": p.get("title", ""),
                 "headRefName": p.get("headRefName", ""), "headRefOid": p.get("headRefOid", ""),
                 "isDraft": p.get("isDraft", False), "labels": p.get("labels", []),
                 "crossRepo": bool(p.get("isCrossRepository")),
                 "mergeable": p.get("mergeable"), "updatedAt": p.get("updatedAt"),
-                "checks": rollup_state(p.get("statusCheckRollup") or []),
+                "checks": checks["state"],
+                "checksSince": checks["since"],
+                "reviewAttempts": checks["reviewAttempts"],
                 "autoMerge": p.get("autoMergeRequest") is not None,
                 "closingIssues": [c["number"] for c in p.get("closingIssuesReferences") or []],
                 "reviews": [{"login": (r.get("user") or {}).get("login"), "state": r.get("state"),
                              "commit": r.get("commit_id"), "submitted_at": r.get("submitted_at")}
                             for r in reviews],
-            })
+            }
+            if checks["state"] == "failure":
+                # Which failed runs were already re-run: decide() re-runs a
+                # first attempt once before it spends an agent on it.
+                item["failedRuns"] = []
+                attempts_of: dict = {}
+                for f in checks["failed"]:
+                    if f["run"] and f["run"] not in attempts_of:
+                        try:
+                            attempts_of[f["run"]] = (self.json(["run", "view", str(f["run"]), "--json",
+                                                                "attempt"]) or {}).get("attempt")
+                        except GhError:
+                            attempts_of[f["run"]] = None
+                    item["failedRuns"].append({"name": f["name"], "run": f["run"],
+                                               "attempt": attempts_of.get(f["run"]) or 99})
+            elif checks["state"] == "pending" and item["headRefOid"]:
+                try:
+                    item["headAt"] = self._run(
+                        ["api", f"repos/{{owner}}/{{repo}}/commits/{item['headRefOid']}",
+                         "--jq", ".commit.committer.date"]).strip() or None
+                except GhError:
+                    item["headAt"] = None
+            prs.append(item)
         return prs
 
     def reviewer_login(self) -> str | None:
         env = os.environ.get("PIPELINE_REVIEWER_LOGIN", "").strip()
         if env:
-            return env
+            # Still no token means every review fails at the wrapper: better
+            # a setup problem than a reviewer dispatched every tick for nothing.
+            return env if reviewer_token() else None
         if not reviewer_token():
             return None
         try:
             return (self.json(["api", "user"], as_reviewer=True) or {}).get("login")
         except GhError:
             return None
+
+    def main_health(self) -> dict | None:
+        """The default branch's head and which required checks fail there."""
+        try:
+            data = self.json(["api", f"repos/{{owner}}/{{repo}}/commits/{DEFAULT_BRANCH}/check-runs"
+                                     "?per_page=100"]) or {}
+            runs = data.get("check_runs") or []
+            sha = runs[0].get("head_sha") if runs else self._run(
+                ["api", f"repos/{{owner}}/{{repo}}/commits/{DEFAULT_BRANCH}", "--jq", ".sha"]).strip()
+        except GhError:
+            return None
+        rollup = [{"__typename": "CheckRun", "name": r.get("name"),
+                   "workflowName": str((r.get("check_suite") or {}).get("id") or ""),
+                   "status": (r.get("status") or "").upper(),
+                   "conclusion": (r.get("conclusion") or "").upper(),
+                   "startedAt": r.get("started_at"), "completedAt": r.get("completed_at"),
+                   "detailsUrl": r.get("details_url")} for r in runs]
+        # Only the required checks that run on a push count: allowlist and
+        # contract never run on the default branch, and their absence is not red.
+        present = {r["name"] for r in rollup}
+        judged = tuple(c for c in REQUIRED_CHECKS if c in present)
+        checks = rollup_checks(rollup, judged) if judged else {"state": "pending", "failed": []}
+        return {"sha": sha, "state": checks["state"],
+                "red": sorted({f["name"] for f in checks["failed"]})}
 
     def labels(self) -> set[str]:
         data = self.json(["label", "list", "--limit", "300", "--json", "name"]) or []
@@ -797,7 +1233,16 @@ class Gh:
             made.append(name)
         return made
 
-    def set_status(self, n: int, status: str | None, current: set[str]) -> None:
+    def set_status(self, n: int, status: str | None, expect=ANY) -> None:
+        """Make `status` the issue's one status label.
+
+        Reads the labels first, so every other status label goes -- not only
+        the ones the survey saw -- and, with `expect`, writes nothing when the
+        issue's status is no longer the one the caller decided on.
+        """
+        current = self.labels_now("issue", n)
+        if expect is not ANY and status_of(current) != expect:
+            raise StaleState(f"#{n} is {status_of(current)} now, not {expect}")
         args = ["issue", "edit", str(n)]
         for s in STATUSES:
             if s in current and s != status:
@@ -820,34 +1265,118 @@ class Gh:
         self._run([kind if kind == "pr" else "issue", "comment", str(n), "--body-file", "-"],
                   input=body, mutating=True)
 
-    def enable_automerge(self, n: int) -> None:
-        self._run(["pr", "merge", str(n), "--auto", "--squash", "--delete-branch"],
-                  as_reviewer=True, mutating=True)
+    def create_issue(self, title: str, body: str, labels: list[str]) -> int | None:
+        args = ["issue", "create", "--title", title, "--body-file", "-"]
+        for l in labels:
+            args += ["--label", l]
+        out = self._run(args, input=body, mutating=True)
+        m = re.search(r"/issues/(\d+)", out)
+        return int(m.group(1)) if m else None
+
+    def close_issue(self, n: int, body: str | None = None) -> None:
+        args = ["issue", "close", str(n)]
+        if body:
+            args += ["--comment", body]
+        self._run(args, mutating=True)
+
+    def rerun(self, run_id: int) -> None:
+        self._run(["run", "rerun", str(run_id), "--failed"], mutating=True)
+
+    def post_status(self, sha: str, context: str, description: str) -> None:
+        self._run(["api", f"repos/{{owner}}/{{repo}}/statuses/{sha}", "-f", "state=success",
+                   "-f", f"context={context}", "-f", f"description={description}"], mutating=True)
+
+    def enable_automerge(self, n: int, head: str | None = None) -> None:
+        args = ["pr", "merge", str(n), "--squash", "--delete-branch"]
+        if head:
+            # Merge only the commit the bot approved.
+            args += ["--match-head-commit", head]
+        try:
+            self._run(args[:3] + ["--auto"] + args[3:], as_reviewer=True, mutating=True)
+        except GhError as e:
+            # GitHub refuses auto-merge on a pull request that could merge now.
+            if "clean status" not in str(e):
+                raise
+            self._run(args, as_reviewer=True, mutating=True)
 
 
-def rollup_state(rollup: list[dict]) -> str:
-    """pending | success | failure over a PR head's check runs and statuses."""
-    if not rollup:
-        return "pending"
-    state = "success"
+def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
+    """The required checks at a pull request's head.
+
+    {"state": pending | success | failure, "failed": [{"name", "run"}],
+     "missing": [...], "reviewAttempts": n}
+
+    Branch protection judges the required checks and nothing else, so neither
+    does this: an optional check that fails does not send a PR to a fix pass,
+    and a required one that has not reported yet is pending, not green. Of
+    several runs of one check -- a re-run, an `edited` event -- only the
+    latest counts, and a cancelled one is pending: something superseded it or
+    will. With no required checks given, every check counts.
+    """
+    latest: dict[tuple, dict] = {}
     for c in rollup:
-        if c.get("__typename") == "StatusContext" or "context" in c and "status" not in c:
+        if c.get("__typename") == "StatusContext" or ("context" in c and "status" not in c):
+            name = c.get("context") or ""
+            key = ("", "status", name)
+            when = c.get("createdAt") or ""
             s = (c.get("state") or "").upper()
-            if s in ("PENDING", "EXPECTED", ""):
-                state = "pending" if state == "success" else state
-            elif s != "SUCCESS":
-                return "failure"
+            outcome = ("pending" if s in ("PENDING", "EXPECTED", "") else
+                       "success" if s == "SUCCESS" else "failure")
+            run = None
         else:
+            name = c.get("name") or ""
+            key = (c.get("workflowName") or "", "run", name)
+            when = c.get("startedAt") or c.get("completedAt") or ""
+            conclusion = (c.get("conclusion") or "").upper()
             if (c.get("status") or "").upper() != "COMPLETED":
-                state = "pending" if state == "success" else state
-            elif (c.get("conclusion") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED"):
-                return "failure"
-    return state
+                outcome = "pending"
+            elif conclusion in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+                outcome = "success"
+            elif conclusion in ("CANCELLED", "STALE"):
+                outcome = "pending"
+            else:
+                outcome = "failure"
+            m = re.search(r"/actions/runs/(\d+)", c.get("detailsUrl") or "")
+            run = int(m.group(1)) if m else None
+        # A run with no start time yet is one just queued -- a re-run, say --
+        # so it is newer than anything that has a time.
+        if not when and outcome == "pending":
+            when = "9999"
+        if key not in latest or when >= latest[key]["when"]:
+            latest[key] = {"name": name, "outcome": outcome, "when": when, "run": run,
+                           "description": c.get("description") or ""}
+
+    attempts = 0
+    for e in latest.values():
+        if e["name"] == REVIEW_STATUS:
+            m = re.search(r"attempt (\d+)", e["description"])
+            attempts = max(attempts, int(m.group(1)) if m else 1)
+    judged = [e for e in latest.values() if not e["name"].startswith("pipeline/")]
+    missing: list[str] = []
+    if required:
+        judged = [e for e in judged if e["name"] in required]
+        missing = [r for r in required if r not in {e["name"] for e in judged}]
+    failed = [e for e in judged if e["outcome"] == "failure"]
+    pending = [e for e in judged if e["outcome"] == "pending"]
+    state = "failure" if failed else "pending" if (pending or missing or not judged) else "success"
+    started = max((e["when"] for e in judged if e["when"] and e["when"] != "9999"), default="") or None
+    return {"state": state, "failed": [{"name": e["name"], "run": e["run"]} for e in failed],
+            "missing": missing, "reviewAttempts": attempts, "since": started}
 
 
-def remote_agent_branches() -> set[str]:
+def rollup_state(rollup: list[dict], required=()) -> str:
+    """pending | success | failure over a head's checks (every check, by default)."""
+    return rollup_checks(rollup, required)["state"]
+
+
+def remote_agent_branches() -> set[str] | None:
+    """agent/ branches on origin, or None when origin could not be asked."""
     proc = subprocess.run(["git", "ls-remote", "--heads", "origin", "agent/*"],
                           capture_output=True, text=True, encoding="utf-8", cwd=REPO_ROOT)
+    if proc.returncode != 0:
+        # An empty set here would read as "no branch": every stale claim with
+        # pushed work would be reset and handed out again beside it.
+        return None
     out = set()
     for line in proc.stdout.splitlines():
         parts = line.split("refs/heads/", 1)
@@ -901,6 +1430,8 @@ def make_lint_fn(gh: Gh, open_numbers: set[int]):
             return "open"
         if n not in cache:
             cache[n] = gh.issue_state(n)
+        if cache[n] == "unknown":
+            return cache.pop(n)  # a failed lookup is asked again next time
         return cache[n]
 
     def lint(issue: dict) -> LintResult:
@@ -908,23 +1439,25 @@ def make_lint_fn(gh: Gh, open_numbers: set[int]):
     return lint
 
 
-def apply_ops(gh: Gh, plan: Plan, issues_by_number: dict[int, dict], lint_fn) -> list[str]:
+def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
+    """The plan's bookkeeping, in order. A write that failed or found the item
+    moved skips the comments that would have explained it."""
     done = []
-    current = {n: labels_of(i) for n, i in issues_by_number.items()}
+    failed: set[tuple] = set()
     for op in plan.ops:
         kind = op["op"]
         n = op.get("number")
+        target = (op.get("kind", "issue") if kind != "set-status" else "issue", n)
+        if kind == "comment" and target in failed:
+            done.append(f"SKIPPED comment {n}: the write it explains did not happen")
+            continue
         try:
             if kind == "set-status":
-                gh.set_status(n, op["status"], current.get(n, set()))
-                cur = current.setdefault(n, set())
-                cur.difference_update(STATUSES)
-                if op["status"]:
-                    cur.add(op["status"])
+                gh.set_status(n, op["status"], op.get("expect", ANY))
             elif kind == "lint":
                 issue = gh.issue(n)
                 result = lint_fn(issue)
-                gh.set_status(n, result.status, current.get(n, set()))
+                gh.set_status(n, result.status, expect=None)
                 if result.status == NEEDS_SPEC:
                     gh.comment("issue", n, lint_comment(n, result))
             elif kind == "add-label":
@@ -934,28 +1467,78 @@ def apply_ops(gh: Gh, plan: Plan, issues_by_number: dict[int, dict], lint_fn) ->
             elif kind == "comment":
                 gh.comment(op["kind"], n, op["body"])
             elif kind == "enable-automerge":
-                gh.enable_automerge(n)
-            done.append(f"{kind} {n}: {op.get('status') or op.get('label') or ''} {op.get('why', '')}".strip())
+                gh.enable_automerge(n, op.get("head"))
+            elif kind == "rerun":
+                gh.rerun(op["run"])
+            elif kind == "create-issue":
+                made = gh.create_issue(op["title"], op["body"], op["labels"])
+                n = made or n
+            elif kind == "close-issue":
+                gh.close_issue(n, op.get("body"))
+            done.append(f"{kind} {n if n is not None else ''}: "
+                        f"{op.get('status') or op.get('label') or op.get('run') or ''} "
+                        f"{op.get('why', '')}".replace("  ", " ").strip())
+        except StaleState as e:
+            failed.add(target)
+            done.append(f"SKIPPED {kind} {n}: {e}")
         except GhError as e:
+            failed.add(target)
             done.append(f"FAILED {kind} {n}: {e}")
     return done
 
 
-def claim(gh: Gh, item: dict, issues_by_number: dict[int, dict]) -> str:
+def claim(gh: Gh, item: dict) -> str:
+    """Take a dispatch item before its agent starts, so no other tick hands it out.
+
+    Each claim re-reads the item first and refuses one that another tick,
+    agent or person has taken since the survey (StaleState).
+    """
     kind = item["kind"]
     if kind == "implement":
         n = item["issue"]
-        gh.set_status(n, IN_PROGRESS, labels_of(issues_by_number.get(n, {})))
+        labels = gh.labels_now("issue", n)
+        if labels & {WORKING, HUMAN_HOLDS}:
+            raise StaleState(f"#{n} is held ({', '.join(sorted(labels & {WORKING, HUMAN_HOLDS}))})")
+        if item.get("resume"):
+            if status_of(labels) != IN_PROGRESS:
+                raise StaleState(f"#{n} is {status_of(labels)} now, not {IN_PROGRESS}")
+            return f"resuming #{n} on {item.get('branch')}"
+        gh.set_status(n, IN_PROGRESS, expect=READY)
         return f"claimed #{n} ({IN_PROGRESS})"
     if kind in ("review", "fix"):
+        p = item["pr"]
+        if WORKING in gh.labels_now("pr", p):
+            raise StaleState(f"PR #{p} is already held")
         add = [WORKING]
-        if kind == "fix" and item.get("round", 0) > 0:
-            add.append(f"{FIX_ROUND}{item['round']}")
-        gh.edit_labels("pr", item["pr"], add=add)
-        return f"claimed PR #{item['pr']} ({', '.join(add)})"
-    if kind in ("triage",) or (kind == "plan" and item.get("issue")):
-        gh.edit_labels("issue", item["issue"], add=[WORKING])
-        return f"claimed #{item['issue']} ({WORKING})"
+        if kind == "review":
+            add.append(REVIEWING)
+            if item.get("head"):
+                # Counted per head commit: decide() hands a PR to the owner
+                # once reviews there keep ending without a verdict.
+                gh.post_status(item["head"], REVIEW_STATUS, f"attempt {item.get('attempt', 1)}")
+        elif item.get("round_label"):
+            add.append(item["round_label"])
+        gh.edit_labels("pr", p, add=add)
+        return f"claimed PR #{p} ({', '.join(add)})"
+    if kind == "triage" or (kind == "plan" and item.get("issue")):
+        n = item["issue"]
+        if WORKING in gh.labels_now("issue", n):
+            raise StaleState(f"#{n} is already held")
+        gh.edit_labels("issue", n, add=[WORKING])
+        return f"claimed #{n} ({WORKING})"
+    if kind == "plan":
+        # Roadmap planning has no issue of its own, so it gets one: the claim
+        # every other tick sees, closed by the planner when it is done.
+        if gh.json(["issue", "list", "--label", PLANNING, "--state", "open", "--limit", "1",
+                    "--json", "number"]):
+            raise StaleState("a roadmap planner is already running")
+        n = gh.create_issue("[pipeline] Planning the roadmap",
+                            "**Pipeline:** the roadmap planner is running. It closes this issue "
+                            "when it is done; if it does not, the next tick closes it after "
+                            f"{CONFIG['limits']['stale_working_hours']} hours and plans again.",
+                            [PLANNING, WORKING])
+        item["tracking"] = n
+        return f"opened #{n} ({PLANNING})" if n else "opened a planning issue (dry run)"
     return "nothing to claim"
 
 
@@ -964,15 +1547,18 @@ def claim(gh: Gh, item: dict, issues_by_number: dict[int, dict]) -> str:
 def cmd_run(args) -> int:
     gh = Gh(dry_run=not args.apply)
     issues = gh.open_issues()
+    prs = gh.open_prs()
     snap = {
         "now": datetime.now(timezone.utc),
         "issues": issues,
-        "prs": gh.open_prs(),
+        "prs": prs,
         "reviewer_login": gh.reviewer_login(),
         "remote_branches": remote_agent_branches(),
+        "paused": gh.paused(),
+        "truncated": len(issues) >= ISSUE_LIMIT or len(prs) >= PR_LIMIT,
+        "main": gh.main_health(),
     }
-    open_numbers = {i["number"] for i in issues}
-    lint_fn = make_lint_fn(gh, open_numbers)
+    lint_fn = make_lint_fn(gh, {i["number"] for i in issues})
     plan = decide(snap, parse_allowlist, lint_fn)
     out = plan.to_json()
     out["setup_problems"] = out["setup_problems"] + preflight()
@@ -980,16 +1566,20 @@ def cmd_run(args) -> int:
         made = gh.ensure_labels()
         if made:
             out["labels_created"] = made
-        by_number = {i["number"]: i for i in issues}
-        out["ops_done"] = apply_ops(gh, plan, by_number, lint_fn)
+        out["ops_done"] = apply_ops(gh, plan, lint_fn)
         out["claims"] = []
         for item in plan.dispatch:
             try:
-                out["claims"].append(claim(gh, item, by_number))
+                out["claims"].append(claim(gh, item))
+            except StaleState as e:
+                out["claims"].append(f"SKIPPED {item['kind']} {item.get('pr') or item.get('issue') or ''}: {e}")
+                item["claim_failed"] = True
             except GhError as e:
                 out["claims"].append(f"FAILED claim {item}: {e}")
                 item["claim_failed"] = True
         out["dispatch"] = [d for d in plan.dispatch if not d.get("claim_failed")]
+    for d in out["dispatch"]:
+        d.pop("must", None)
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0
 
@@ -1008,12 +1598,18 @@ def cmd_lint(args) -> int:
               "blockers_open": result.blockers_open}
     if status not in LINT_OWNED:
         report["skipped"] = f"status {status} is not lint's to change"
+    elif WORKING in labels:
+        report["skipped"] = f"{WORKING}: an agent is editing it; the tick lints it when it is done"
     elif args.apply and result.status != status:
         gh.ensure_labels()
-        gh.set_status(args.issue, result.status, labels)
-        if result.status == NEEDS_SPEC:
-            gh.comment("issue", args.issue, lint_comment(args.issue, result))
-        report["applied"] = True
+        try:
+            gh.set_status(args.issue, result.status, expect=status)
+        except StaleState as e:
+            report["skipped"] = str(e)
+        else:
+            if result.status == NEEDS_SPEC:
+                gh.comment("issue", args.issue, lint_comment(args.issue, result))
+            report["applied"] = True
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 
@@ -1025,7 +1621,7 @@ def cmd_relint(args) -> int:
     changed = []
     for issue in issues:
         labels = labels_of(issue)
-        if AGENT_TASK not in labels or labels & {ASSET, HUMAN_DECISION, IDEA}:
+        if AGENT_TASK not in labels or labels & {ASSET, HUMAN_DECISION, IDEA} or WORKING in labels:
             continue
         status = status_of(labels)
         if status not in LINT_OWNED:
@@ -1034,7 +1630,11 @@ def cmd_relint(args) -> int:
         if result.status != status:
             changed.append({"issue": issue["number"], "from": status, "to": result.status})
             if args.apply:
-                gh.set_status(issue["number"], result.status, labels)
+                try:
+                    gh.set_status(issue["number"], result.status, expect=status)
+                except StaleState:
+                    changed[-1]["skipped"] = "moved since the survey"
+                    continue
                 if result.status == NEEDS_SPEC:
                     gh.comment("issue", issue["number"], lint_comment(issue["number"], result))
     print(json.dumps({"changed": changed}, indent=2, ensure_ascii=False))
@@ -1042,19 +1642,37 @@ def cmd_relint(args) -> int:
 
 
 def cmd_claim(args) -> int:
+    """Claim by hand: `claim issue N [--interactive]`, `claim pr N [--round K]`."""
     gh = Gh()
-    item = {"kind": "implement" if args.kind == "issue" else "review",
-            "issue": args.number, "pr": args.number, "round": args.round or 0}
-    if args.kind == "pr" and args.round:
-        item["kind"] = "fix"
-    issues = {args.number: gh.issue(args.number)} if args.kind == "issue" else {}
-    print(claim(gh, item, issues))
+    if args.kind == "issue":
+        gh.ensure_labels()
+        gh.set_status(args.number, IN_PROGRESS)
+        if args.interactive:
+            # The owner is on it: the tick neither resets it when it goes quiet
+            # nor sends a fix pass to its pull request.
+            gh.edit_labels("issue", args.number, add=[HUMAN_HOLDS])
+        print(f"claimed #{args.number} ({IN_PROGRESS}{', ' + HUMAN_HOLDS if args.interactive else ''})")
+        return 0
+    add = [WORKING] + ([f"{FIX_ROUND}{args.round}"] if args.round else [REVIEWING])
+    gh.edit_labels("pr", args.number, add=add)
+    print(f"claimed PR #{args.number} ({', '.join(add)})")
     return 0
 
 
 def cmd_release(args) -> int:
-    Gh().edit_labels(args.kind, args.number, remove=[WORKING])
-    print(f"released {args.kind} {args.number}")
+    """Drop a claim. `--round-label` also refunds a fix or conflict round whose
+    agent never started (the tick passes it when an agent type is missing)."""
+    remove = [WORKING]
+    if args.kind == "pr":
+        remove.append(REVIEWING)
+        if args.round_label:
+            remove.append(args.round_label)
+    elif args.hold:
+        # Only on request: triage, the planner and the tick release issues
+        # too, and must never take the owner's hold away with their own.
+        remove.append(HUMAN_HOLDS)
+    Gh().edit_labels(args.kind, args.number, remove=remove)
+    print(f"released {args.kind} {args.number} ({', '.join(remove)})")
     return 0
 
 
@@ -1065,7 +1683,7 @@ def cmd_set_status(args) -> int:
         print(f"unknown status {status}; one of: {', '.join(STATUSES)}, none", file=sys.stderr)
         return 2
     gh.ensure_labels()
-    gh.set_status(args.issue, status, labels_of(gh.issue(args.issue)))
+    gh.set_status(args.issue, status)
     print(f"#{args.issue} -> {status}")
     return 0
 
@@ -1258,9 +1876,11 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("relint"); s.add_argument("--apply", action="store_true"); s.set_defaults(fn=cmd_relint)
     s = sub.add_parser("claim"); s.add_argument("kind", choices=["issue", "pr"])
     s.add_argument("number", type=int); s.add_argument("--round", type=int)
-    s.set_defaults(fn=cmd_claim)
+    s.add_argument("--interactive", action="store_true"); s.set_defaults(fn=cmd_claim)
     s = sub.add_parser("release"); s.add_argument("kind", choices=["issue", "pr"])
-    s.add_argument("number", type=int); s.set_defaults(fn=cmd_release)
+    s.add_argument("number", type=int); s.add_argument("--round-label")
+    s.add_argument("--hold", action="store_true", help="also hand an owner-held issue back")
+    s.set_defaults(fn=cmd_release)
     s = sub.add_parser("set-status"); s.add_argument("issue", type=int); s.add_argument("status")
     s.set_defaults(fn=cmd_set_status)
     s = sub.add_parser("check-pr-body"); s.set_defaults(fn=cmd_check_pr_body)
