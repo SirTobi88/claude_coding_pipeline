@@ -14,7 +14,8 @@ for other work — the script decides, you spawn and report.
 .claude/bin/pipeline run --apply
 ```
 
-It prints JSON. If the command fails (no `gh`, not authenticated, network),
+It first fast-forwards this checkout to the default branch on GitHub (when the
+checkout is clean and on it), then surveys, and prints JSON. If the command fails (no `gh`, not authenticated, network),
 report the error verbatim in one line and stop — do not retry more than once.
 
 - `"paused": true` → report "paused (`pipeline:pause`)" and stop.
@@ -31,7 +32,7 @@ them.
 | `kind` | `subagent_type` | Prompt |
 |---|---|---|
 | `implement` | `github-issue-resolver` | `Implement issue #<issue> ("<title>").` plus ` Resume branch <branch>.` when `resume` is true |
-| `fix` | `github-issue-resolver` | `Fix PR #<pr> on branch <branch> for issue #<issue>. Reason: <reason>. Fix round <round>.` |
+| `fix` | `github-issue-resolver` | `Fix PR #<pr> on branch <branch> for issue #<issue>. Reason: <reason>. Fix round <round>. Reviewer bot: <reviewer>.` |
 | `review` | `github-pr-reviewer` | `Review PR #<pr> (branch <branch>, issue #<issue>).` |
 | `triage` | `github-triage` | `Triage issue #<issue>. It is here because of <reason>.` |
 | `plan` | `github-planner` | `Mode: <mode>.` plus ` Idea issue #<issue>.` when `issue` is set, plus ` Planning issue #<tracking>.` when `tracking` is set |

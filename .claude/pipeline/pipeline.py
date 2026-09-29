@@ -118,6 +118,9 @@ HUMAN_HOLDS = "pipeline:human-holds"
 PLANNING = "pipeline:planning"
 MAIN_RED = "pipeline:main-red"
 ATTEMPT = "attempt-1"
+# The owner answered a question the pipeline asked (docs/Pipeline.md § What
+# stays with the owner): the tick resumes the item and removes the label.
+ANSWERED = "human:answered"
 SPEC_DEFECT = "spec-defect"
 TRIAGED = "triaged"
 FIX_ROUND = "fix-round-"
@@ -125,6 +128,9 @@ CONFLICT_ROUND = "conflict-round-"
 # A commit status on a pull request's head, one per review dispatched there.
 # Being a status, it belongs to that commit: a new push starts the count again.
 REVIEW_STATUS = "pipeline/review"
+# Posted when the owner answers on a pull request: the comment-only reviews and
+# review attempts at that head up to the answer, so only later ones count.
+ANSWERED_STATUS = "pipeline/answered"
 
 LABELS = {
     READY: ("0e8a16", "Lint passed and nothing blocks it: an implementer may take it"),
@@ -143,6 +149,7 @@ LABELS = {
     PLANNING: ("ededed", "The roadmap planner is running; closed when it finishes"),
     MAIN_RED: ("b60205", "The default branch is red; fix passes wait until it is green"),
     ATTEMPT: ("fbca04", "An implementer ended once without a PR or an escalation"),
+    ANSWERED: ("0e8a16", "The owner answered: the next tick resumes this and removes the label"),
     SPEC_DEFECT: ("e99695", "Review handed this back because the issue was underspecified"),
     TRIAGED: ("d4c5f9", "Triage has answered this once; a second escalation goes to a human"),
     AGENT_TASK: ("0052cc", "A single seam, sized for one coding agent and one branch"),
@@ -572,13 +579,24 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         plan.ops.append({"op": "set-status", "number": n, "status": status,
                          "expect": expect, "why": why})
 
-    def comment(kind: str, n: int, body: str) -> None:
-        plan.ops.append({"op": "comment", "kind": kind, "number": n, "body": body})
+    owner = snap.get("owner_login")
+    answer_how = (f"Answer in a comment and add the `{ANSWERED}` label; the next tick picks it "
+                  "up from there.")
+
+    def comment(kind: str, n: int, body: str, notify: bool = False) -> None:
+        # A hand-off mentions the owner, and is posted as the bot when there is
+        # one: GitHub does not notify you of your own account's comments, and
+        # every agent writes as you.
+        if notify and owner:
+            body = f"@{owner} {body}"
+        plan.ops.append({"op": "comment", "kind": kind, "number": n, "body": body,
+                         "as_bot": notify})
 
     def pr_to_owner(n: int, why: str, text: str) -> None:
         plan.ops.append({"op": "add-label", "kind": "pr", "number": n, "label": NEEDS_HUMAN,
                          "why": why})
-        comment("pr", n, f"**Pipeline:** {text} Handing this to a human (`{NEEDS_HUMAN}`).")
+        comment("pr", n, f"**Pipeline:** {text} Handing this to a human (`{NEEDS_HUMAN}`). "
+                         + answer_how, notify=True)
         plan.awaiting_human.append(f"PR #{n}: {why}")
 
     issue_by_n = {i["number"]: i for i in issues}
@@ -631,6 +649,22 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             plan.awaiting_human.append(f"{tag}: from a fork -- review it yourself")
             continue
         issue_n = pr_issue.get(n)
+        if NEEDS_HUMAN in labels and ANSWERED in labels:
+            # The owner answered: the PR gets its rounds back, and the reviews
+            # that ended without a verdict up to now stop counting.
+            comment_only = latest_verdict(pr.get("reviews", []), reviewer, pr.get("headRefOid", ""))[1]
+            for label in sorted(l for l in labels if l in (NEEDS_HUMAN, ANSWERED)
+                                or l.startswith((FIX_ROUND, CONFLICT_ROUND))):
+                plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": label,
+                                 "why": "the owner answered"})
+            if pr.get("headRefOid"):
+                plan.ops.append({"op": "post-status", "number": n, "sha": pr["headRefOid"],
+                                 "context": ANSWERED_STATUS,
+                                 "description": f"comments={comment_only} "
+                                                f"attempts={int(pr.get('reviewAttempts') or 0)}",
+                                 "why": "the owner answered"})
+            plan.waiting.append(f"{tag}: the owner answered -- it resumes next tick")
+            continue
         if NEEDS_HUMAN in labels:
             plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
             continue
@@ -718,7 +752,7 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             count["fix"] += 1
             plan.dispatch.append({**base, "kind": "fix", "agent": "github-issue-resolver",
                                   "reason": reason, "round": rounds + 1,
-                                  "round_label": f"{prefix}{rounds + 1}"})
+                                  "round_label": f"{prefix}{rounds + 1}", "reviewer": reviewer})
 
         if pr.get("isDraft"):
             # A draft from an escalation whose issue is back in the queue: the
@@ -788,13 +822,14 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if verdict == "CHANGES_REQUESTED":
             fix("review")
             continue
+        comment_only -= int(pr.get("answeredComments") or 0)
         if comment_only >= lim.max_comment_only_reviews:
             pr_to_owner(n, f"no verdict after {comment_only} reviews",
                         f"the reviewer answered this head {comment_only} times with a comment "
                         "and no verdict.")
             continue
         attempts = int(pr.get("reviewAttempts") or 0)
-        if attempts >= lim.max_review_attempts:
+        if attempts - int(pr.get("answeredAttempts") or 0) >= lim.max_review_attempts:
             pr_to_owner(n, f"review ended without a verdict {attempts} times",
                         f"a review was dispatched {attempts} times at {head[:7]} and none "
                         "submitted a verdict.")
@@ -827,6 +862,14 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         labels = labels_of(issue)
 
         if IDEA in labels:
+            if NEEDS_HUMAN in labels and ANSWERED in labels:
+                # The planner reads the idea's comments; the answer is there.
+                for label in (NEEDS_HUMAN, ANSWERED):
+                    plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
+                                     "label": label, "why": "the owner answered"})
+                plan.waiting.append(f"{tag}: the owner answered -- planned next tick")
+                ideas_open = True
+                continue
             if NEEDS_HUMAN in labels:
                 plan.awaiting_human.append(f"{tag}: idea waiting on an answer")
                 continue
@@ -855,10 +898,13 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if IDLE in labels:
             plan.awaiting_human.append(f"{tag}: roadmap gate (pipeline:idle) -- planning waits on you")
             continue
-        if AGENT_TASK not in labels:
-            continue
         if labels & {HUMAN_DECISION, ASSET}:
+            # With or without agent-task: the owner's either way.
             plan.awaiting_human.append(f"{tag}: {', '.join(sorted(labels & {HUMAN_DECISION, ASSET}))}")
+            continue
+        if AGENT_TASK not in labels:
+            if NEEDS_HUMAN in labels and MAIN_RED not in labels:
+                plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
             continue
 
         status = status_of(labels)
@@ -872,6 +918,20 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             # these files: a new issue that shares one waits.
             review_scopes.append(_safe_scope(allowlist_fn, issue.get("body", "")))
 
+        if status == NEEDS_HUMAN and ANSWERED in labels:
+            # The owner answered the question. Triage works the answer into the
+            # issue, however often it has answered before: this is new input.
+            issue_status(n, ESCALATED, NEEDS_HUMAN, "the owner answered")
+            for label in sorted({ANSWERED, TRIAGED} & labels):
+                plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
+                                 "label": label, "why": "the owner answered"})
+            if triage_running + count["triage"] < lim.max_parallel_triage and not fresh_working(issue):
+                count["triage"] += 1
+                plan.dispatch.append({"kind": "triage", "agent": "github-triage", "issue": n,
+                                      "reason": "owner-answered"})
+            else:
+                plan.waiting.append(f"{tag}: the owner answered -- triage next tick")
+            continue
         if status == NEEDS_HUMAN:
             plan.awaiting_human.append(f"{tag}: {NEEDS_HUMAN}")
             continue
@@ -886,7 +946,8 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             if TRIAGED in labels:
                 issue_status(n, NEEDS_HUMAN, status, f"{status} again after triage")
                 comment("issue", n, f"**Pipeline:** `{status}` a second time after triage. "
-                                    f"Handing this to a human (`{NEEDS_HUMAN}`).")
+                                    f"Handing this to a human (`{NEEDS_HUMAN}`). " + answer_how,
+                        notify=True)
                 plan.awaiting_human.append(f"{tag}: {status} twice")
             elif triage_running + count["triage"] >= lim.max_parallel_triage:
                 plan.deferred.append(f"{tag}: triage cap ({lim.max_parallel_triage}) reached")
@@ -915,8 +976,10 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                     issue_status(n, target, IN_PROGRESS, "implementer ended twice without a PR")
                     comment("issue", n, "**Pipeline:** an implementer ended on this issue twice "
                                         f"without opening a PR or escalating.{where} "
-                                        + ("Handing this to a human." if target == NEEDS_HUMAN
-                                           else "Triage decides what is wrong with it."))
+                                        + (f"Handing this to a human. {answer_how}"
+                                           if target == NEEDS_HUMAN
+                                           else "Triage decides what is wrong with it."),
+                            notify=target == NEEDS_HUMAN)
                     if target == NEEDS_HUMAN:
                         plan.awaiting_human.append(f"{tag}: implementer ended twice")
                 elif branches:
@@ -1150,6 +1213,8 @@ class Gh:
                 "checks": checks["state"],
                 "checksSince": checks["since"],
                 "reviewAttempts": checks["reviewAttempts"],
+                "answeredComments": checks["answeredComments"],
+                "answeredAttempts": checks["answeredAttempts"],
                 "autoMerge": p.get("autoMergeRequest") is not None,
                 "closingIssues": [c["number"] for c in p.get("closingIssuesReferences") or []],
                 "reviews": [{"login": (r.get("user") or {}).get("login"), "state": r.get("state"),
@@ -1261,9 +1326,21 @@ class Gh:
         if len(args) > 3:
             self._run(args, mutating=True)
 
-    def comment(self, kind: str, n: int, body: str) -> None:
-        self._run([kind if kind == "pr" else "issue", "comment", str(n), "--body-file", "-"],
-                  input=body, mutating=True)
+    def comment(self, kind: str, n: int, body: str, as_bot: bool = False) -> None:
+        args = [kind if kind == "pr" else "issue", "comment", str(n), "--body-file", "-"]
+        if as_bot and reviewer_token():
+            try:
+                self._run(args, input=body, as_reviewer=True, mutating=True)
+                return
+            except GhError:
+                pass  # the bot cannot comment here: still say it, as the agents
+        self._run(args, input=body, mutating=True)
+
+    def owner_login(self) -> str | None:
+        try:
+            return (self.json(["repo", "view", "--json", "owner"]) or {}).get("owner", {}).get("login")
+        except GhError:
+            return None
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> int | None:
         args = ["issue", "create", "--title", title, "--body-file", "-"]
@@ -1347,10 +1424,15 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
                            "description": c.get("description") or ""}
 
     attempts = 0
+    answered = {"comments": 0, "attempts": 0}
     for e in latest.values():
         if e["name"] == REVIEW_STATUS:
             m = re.search(r"attempt (\d+)", e["description"])
             attempts = max(attempts, int(m.group(1)) if m else 1)
+        elif e["name"] == ANSWERED_STATUS:
+            for key in answered:
+                m = re.search(rf"{key}=(\d+)", e["description"])
+                answered[key] = int(m.group(1)) if m else 0
     judged = [e for e in latest.values() if not e["name"].startswith("pipeline/")]
     missing: list[str] = []
     if required:
@@ -1361,7 +1443,8 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
     state = "failure" if failed else "pending" if (pending or missing or not judged) else "success"
     started = max((e["when"] for e in judged if e["when"] and e["when"] != "9999"), default="") or None
     return {"state": state, "failed": [{"name": e["name"], "run": e["run"]} for e in failed],
-            "missing": missing, "reviewAttempts": attempts, "since": started}
+            "missing": missing, "reviewAttempts": attempts, "since": started,
+            "answeredComments": answered["comments"], "answeredAttempts": answered["attempts"]}
 
 
 def rollup_state(rollup: list[dict], required=()) -> str:
@@ -1422,6 +1505,31 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
     return problems
 
 
+def sync_checkout(root: Path = REPO_ROOT, run=subprocess.run) -> list[str]:
+    """Bring the tick's checkout up to the default branch on GitHub.
+
+    The tick runs this checkout's pipeline.py, its agents read its prompts, and
+    implementer worktrees start from it; left alone, it never moves past the
+    day it was cloned. Fast-forward only, and only a clean checkout on the
+    default branch: anything else is reported, never overwritten.
+    """
+    def git(*args: str):
+        return run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
+
+    fetched = git("fetch", "--prune", "origin", DEFAULT_BRANCH)
+    if fetched.returncode != 0:
+        return [f"could not fetch origin/{DEFAULT_BRANCH}: {(fetched.stderr or '').strip()[:200]}"]
+    branch = (git("rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip()
+    dirty = (git("status", "--porcelain", "--untracked-files=no").stdout or "").strip()
+    if branch != DEFAULT_BRANCH or dirty:
+        return []  # preflight() reports both; neither is this function's to fix
+    merged = git("merge", "--ff-only", f"origin/{DEFAULT_BRANCH}")
+    if merged.returncode != 0:
+        return [f"the tick's checkout cannot fast-forward to origin/{DEFAULT_BRANCH} (local "
+                f"commits?): {(merged.stderr or '').strip()[:200]}"]
+    return []
+
+
 def make_lint_fn(gh: Gh, open_numbers: set[int]):
     cache: dict[int, str | None] = {}
 
@@ -1465,7 +1573,9 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
             elif kind == "remove-label":
                 gh.edit_labels(op["kind"], n, remove=[op["label"]])
             elif kind == "comment":
-                gh.comment(op["kind"], n, op["body"])
+                gh.comment(op["kind"], n, op["body"], as_bot=bool(op.get("as_bot")))
+            elif kind == "post-status":
+                gh.post_status(op["sha"], op["context"], op["description"])
             elif kind == "enable-automerge":
                 gh.enable_automerge(n, op.get("head"))
             elif kind == "rerun":
@@ -1546,6 +1656,10 @@ def claim(gh: Gh, item: dict) -> str:
 
 def cmd_run(args) -> int:
     gh = Gh(dry_run=not args.apply)
+    # Before the survey, so this tick's agents start from what is on GitHub.
+    # The running pipeline.py is already loaded: an update to it counts from
+    # the next tick.
+    synced = sync_checkout() if args.apply else []
     issues = gh.open_issues()
     prs = gh.open_prs()
     snap = {
@@ -1557,11 +1671,12 @@ def cmd_run(args) -> int:
         "paused": gh.paused(),
         "truncated": len(issues) >= ISSUE_LIMIT or len(prs) >= PR_LIMIT,
         "main": gh.main_health(),
+        "owner_login": gh.owner_login(),
     }
     lint_fn = make_lint_fn(gh, {i["number"] for i in issues})
     plan = decide(snap, parse_allowlist, lint_fn)
     out = plan.to_json()
-    out["setup_problems"] = out["setup_problems"] + preflight()
+    out["setup_problems"] = out["setup_problems"] + synced + preflight()
     if args.apply and not plan.paused:
         made = gh.ensure_labels()
         if made:

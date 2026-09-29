@@ -24,18 +24,39 @@ complete draft and file only on an explicit yes.
 waits for an answer.
 
 - **File directly** with `gh issue create` (§ 5). No draft shown, no confirmation.
-- **Label `agent-task`** (or `asset`, § 0). **Never set a `status:*` label** —
+- **Label `agent-task`** (or `asset`, § 0b). **Never set a `status:*` label** —
   issue-lint judges the issue on creation and sets `status:ready`,
   `status:blocked` or `status:needs-spec` itself; a rejected spec goes to triage.
+  (A question issue, § 0, is the one exception.)
 - **An unpinned seam is not a reason to stop** (§ 2): file the interface as its
   own issue first — stubs plus the failing test — and put its number in this
   issue's **Blocked by**. Interfaces land before implementations.
 - A Files-in-scope collision with an open issue (§ 3) becomes a **Blocked by**
   on the issue that holds the file, never a shared allowlist.
-- Anything that needs a design decision is not filed: the calling agent raises
-  it as `status:needs-human` instead.
+- Work that needs a design decision first is filed as a **question issue**
+  (§ 0), never as work that assumes an answer.
+- **Never apply `human-decision`** — only the owner does: it is the key to the
+  pipeline's own files (`docs/Pipeline.md` § What stays with the owner), and the
+  bash guard refuses it to agents.
 
-## 0. Does this need an asset? Then it is two issues
+## 0. A decision nobody has made? Then it is a question issue
+
+When the work depends on a choice the design docs do not make — or two docs,
+or a doc and the code, disagree — do not file the work. File the question:
+
+```bash
+gh issue create --title "[question] <the decision, in a few words>" \
+  --body-file .claude/tmp/question-<slug>.md --label agent-task --label status:needs-human
+```
+
+The body: what has to be decided and why it came up (link the issue or PR),
+the options you see with what each would cost, and — last — how to answer:
+*"Answer in a comment and add the `human:answered` label."* The tick lists it
+under *Needs you*; once answered, triage writes the answer into a proper
+agent-task body and the lint takes it from there. Setting `status:needs-human`
+on a question is the one exception to "never set a status label".
+
+## 0b. Does this need an asset? Then it is two issues
 
 Work that a human or specialist must *produce* — art, audio, copy, a legal text
 — is a different seam from the code that consumes it. Model it as a **parent
@@ -79,7 +100,7 @@ Autonomous: file the interface issue first and block this one on it.
 Draft the allowlist, then compare it against every open agent-task issue:
 
 ```bash
-gh issue list --label agent-task --state open --json number,title,body,labels
+gh issue list --label agent-task --state open --limit 300 --json number,title,body,labels
 ```
 
 Any overlap is a defect unless the two are an **ordered handoff**

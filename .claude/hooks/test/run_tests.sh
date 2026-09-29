@@ -274,6 +274,9 @@ expect_eq "bash guard: quoted method"                           2 "$(bguard "gh 
 expect_eq "bash guard: method after a double space"             2 "$(bguard "gh api --method  PATCH repos/o/r/issues/5" github-issue-resolver implementer)"
 expect_eq "bash guard: protection through GraphQL"              2 "$(bguard "gh api graphql -f query='mutation { deleteBranchProtectionRule(input: {}) { clientMutationId } }'" "")"
 expect_eq "bash guard: setup-repo from a session"               2 "$(bguard ".claude/bin/pipeline setup-repo" "")"
+expect_eq "bash guard: setup-repo through python"               2 "$(bguard "python3 .claude/pipeline/pipeline.py setup-repo --dry-run" "")"
+expect_eq "bash guard: setup-repo after &&"                     2 "$(bguard "cd x && .claude/bin/pipeline setup-repo" "")"
+expect_eq "bash guard: naming setup-repo is not running it"     0 "$(bguard "grep -n 'pipeline setup-repo' docs/Pipeline.md" "")"
 expect_eq "bash guard: implementer edits via -R"                2 "$(bguard "gh -R o/r issue edit 5 --add-label x" github-issue-resolver implementer)"
 expect_eq "bash guard: implementer edits via --repo later"      2 "$(bguard "gh issue --repo o/r edit 5" github-issue-resolver implementer)"
 expect_eq "bash guard: force push, flag last"                   2 "$(bguard "git push origin agent/5-x --force" github-issue-resolver implementer)"
@@ -291,6 +294,10 @@ expect_eq "bash guard: triage applies human-decision"           2 "$(bguard "gh 
 expect_eq "bash guard: planner files a human-decision issue"    2 "$(bguard "gh issue create --title q --label human-decision" github-planner planner)"
 expect_eq "bash guard: planner lists human-decision issues"     0 "$(bguard "gh issue list --label human-decision --state open" github-planner planner)"
 expect_eq "bash guard: the owner applies human-decision"        0 "$(bguard "gh issue edit 5 --add-label human-decision" "")"
+expect_eq "bash guard: git -C force push"                       2 "$(bguard "git -C .claude/worktrees/review-5 push --force origin HEAD:agent/5-x" github-pr-reviewer)"
+expect_eq "bash guard: git -C push onto main"                   2 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:main" github-pr-reviewer)"
+expect_eq "bash guard: reviewer pushes from its worktree"       0 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:agent/5-x" github-pr-reviewer)"
+expect_eq "bash guard: triage may not push via git -C"          2 "$(bguard "git -C x push origin agent/5-x" github-triage triage)"
 
 # --- lib/pr_allowlist.sh: the `allowlist` required check ------------------------
 

@@ -52,10 +52,11 @@ else
 fi
 [ -n "$cmd" ] || exit 0
 
-# One spelling to match against: whitespace runs collapsed, and gh's
-# -R/--repo option dropped wherever it sits (`gh -R o/r issue edit`).
+# One spelling to match against: whitespace runs collapsed, gh's -R/--repo
+# option dropped wherever it sits (`gh -R o/r issue edit`), and git's -C <dir>
+# too (`git -C .claude/worktrees/review-5 push` is a `git push`).
 norm="$(printf '%s' "$cmd" | tr -s ' \t\n' '   ' \
-        | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g')"
+        | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
 
 refuse() {
     {
@@ -138,12 +139,14 @@ sets them, run by the owner in a terminal (docs/Pipeline.md § Setup)."
         esac ;;
 esac
 
-case "$norm" in
-    *"pipeline setup-repo"*|*"pipeline.py setup-repo"*)
-        refuse "setup-repo is run by the owner in a terminal, not from a Claude session." \
+# Where it is run, not wherever it is named: a heredoc or a grep that only
+# mentions it is not a call.
+if printf '%s' "$norm" \
+     | grep -qE '(^|[;&|(]) *((python3?|py) )?([^ ;&|]*/)?pipeline(\.py)? setup-repo'; then
+    refuse "setup-repo is run by the owner in a terminal, not from a Claude session." \
 "It sets branch protection and needs the owner's own login, which no agent
-holds (docs/Pipeline.md § Setup, step 4)." ;;
-esac
+holds (docs/Pipeline.md § Setup, step 4)."
+fi
 
 # Pushes: never rewrite or delete remote history; a subagent pushes only to an
 # agent/ branch.
