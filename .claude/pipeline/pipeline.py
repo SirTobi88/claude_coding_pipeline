@@ -34,7 +34,9 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -223,11 +225,6 @@ class Limits:
 
 
 LIMITS = Limits.from_config(CONFIG["limits"])
-MAX_FIX_ROUNDS = LIMITS.max_fix_rounds
-MAX_PARALLEL_IMPLEMENT = LIMITS.max_parallel_implement
-MAX_PARALLEL_REVIEW = LIMITS.max_parallel_review
-STALE_IN_PROGRESS = LIMITS.stale_in_progress
-STALE_WORKING = LIMITS.stale_working
 
 # Round labels exist for every round the limits allow: a label the claim adds
 # must exist, or the claim fails every tick and the pull request never moves.
@@ -493,6 +490,15 @@ class LintResult:
             return BLOCKED
         return READY
 
+    @property
+    def clean(self) -> bool:
+        """Nothing to say: a lint note is neither needed nor kept up."""
+        return not (self.problems or self.warnings)
+
+    @property
+    def blocked_by(self) -> str:
+        return f"blocked by #{', #'.join(map(str, self.blockers_open))}"
+
 
 def blocked_by_numbers(text: str | None, self_number: int) -> list[int]:
     if not text:
@@ -634,13 +640,17 @@ class Plan:
             "waiting", "in_flight", "awaiting_human", "deferred")}
 
 
+def bot_reviews_at(reviews: list[dict], reviewer: str | None, head: str) -> list[dict]:
+    """The reviewer bot's reviews of this exact head -- the only ones that count."""
+    return [r for r in reviews
+            if (r.get("login") or "").lower() == (reviewer or "").lower() and r.get("commit") == head]
+
+
 def latest_verdict(reviews: list[dict], reviewer: str | None, head: str) -> tuple[str | None, int]:
     """(APPROVED | CHANGES_REQUESTED | None, comment-only reviews at head) by the reviewer bot."""
     if not reviewer:
         return None, 0
-    mine = [r for r in reviews
-            if (r.get("login") or "").lower() == reviewer.lower() and r.get("commit") == head]
-    mine.sort(key=lambda r: r.get("submitted_at") or "")
+    mine = sorted(bot_reviews_at(reviews, reviewer, head), key=lambda r: r.get("submitted_at") or "")
     verdict = None
     comments = 0
     for r in mine:
@@ -653,9 +663,8 @@ def latest_verdict(reviews: list[dict], reviewer: str | None, head: str) -> tupl
 
 def approved_at(reviews: list[dict], reviewer: str | None, head: str) -> datetime | None:
     """When the bot last approved this head."""
-    times = [parse_time(r.get("submitted_at")) for r in reviews
-             if (r.get("login") or "").lower() == (reviewer or "").lower()
-             and r.get("commit") == head and r.get("state") == "APPROVED"]
+    times = [parse_time(r.get("submitted_at")) for r in bot_reviews_at(reviews, reviewer, head)
+             if r.get("state") == "APPROVED"]
     times = [t for t in times if t]
     return max(times) if times else None
 
@@ -1178,19 +1187,18 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                 if target != status:
                     issue_status(n, target, status, f"PR #{pr['number']} is open"
                                  if target == IN_REVIEW else "; ".join(result.problems)
-                                 or f"blocked by #{', #'.join(map(str, result.blockers_open))}")
+                                 or result.blocked_by)
                     if target == NEEDS_SPEC:
                         plan.ops.append({"op": "lint-note", "number": n,
                                          "body": lint_comment(n, result), "clean": False})
                 if target == BLOCKED:
-                    plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
+                    plan.waiting.append(f"{tag}: {result.blocked_by}")
                 continue
             if desired != status:
                 issue_status(n, desired, status, "; ".join(result.problems) or
-                             (f"blocked by #{', #'.join(map(str, result.blockers_open))}"
-                              if result.blockers_open else "lint passed"))
+                             (result.blocked_by if result.blockers_open else "lint passed"))
                 plan.ops.append({"op": "lint-note", "number": n, "body": lint_comment(n, result),
-                                 "clean": not (result.problems or result.warnings)})
+                                 "clean": result.clean})
                 if desired in active_statuses and status not in active_statuses:
                     active += 1
             if desired == READY:
@@ -1209,7 +1217,7 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                 else:
                     candidates.append((issue, scope))
             elif desired == BLOCKED:
-                plan.waiting.append(f"{tag}: blocked by #{', #'.join(map(str, result.blockers_open))}")
+                plan.waiting.append(f"{tag}: {result.blocked_by}")
 
     # ---- new implementations ----
     # The cap counts implementers; the overlap check also counts work whose PR
@@ -1347,15 +1355,34 @@ class Gh:
         out = self._run(args, as_reviewer=as_reviewer)
         return json.loads(out) if out.strip() else None
 
+    def paginate(self, path: str, key: str | None = None) -> list:
+        """Every item of a paginated REST list -- the items under `key` where
+        the API wraps each page in an object (`workflow_runs`, `jobs`)."""
+        pages = self.json(["api", "--paginate", "--slurp", path]) or []
+        if key:
+            return [x for page in pages for x in (page or {}).get(key) or []]
+        return [x for page in pages for x in page or []]
+
     # reads
     def open_issues(self) -> list[dict]:
         return self.json(["issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT),
                           "--json", "number,title,labels,body,updatedAt"]) or []
 
+    def open_issues_labelled(self, label: str) -> list[dict]:
+        """The first open issue carrying `label`, if any: [] or [{"number": n}]."""
+        return self.json(["issue", "list", "--label", label, "--state", "open",
+                          "--limit", "1", "--json", "number"]) or []
+
     def paused(self) -> bool:
         # Asked on its own, so the kill switch works however many issues are open.
-        return bool(self.json(["issue", "list", "--label", PAUSE, "--state", "open",
-                               "--limit", "1", "--json", "number"]))
+        return bool(self.open_issues_labelled(PAUSE))
+
+    def collaborator_permission(self, login: str) -> str | None:
+        try:
+            return (self.json(["api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"])
+                    or {}).get("permission")
+        except GhError:
+            return None
 
     def issue(self, n: int) -> dict:
         return self.json(["issue", "view", str(n), "--json", "number,title,labels,body,updatedAt,state"])
@@ -1388,13 +1415,10 @@ class Gh:
         attempt of each run counts, as it does for branch protection.
         """
         rollup: list[dict] = []
-        pages = self.json(["api", "--paginate", "--slurp",
-                           f"repos/{{owner}}/{{repo}}/actions/runs?head_sha={sha}&per_page=100"]) or []
-        for run in (r for page in pages for r in (page or {}).get("workflow_runs") or []):
-            jobs = self.json(["api", "--paginate", "--slurp",
-                              f"repos/{{owner}}/{{repo}}/actions/runs/{run['id']}/jobs"
-                              "?filter=latest&per_page=100"]) or []
-            for job in (j for page in jobs for j in (page or {}).get("jobs") or []):
+        for run in self.paginate(f"repos/{{owner}}/{{repo}}/actions/runs?head_sha={sha}&per_page=100",
+                                 "workflow_runs"):
+            for job in self.paginate(f"repos/{{owner}}/{{repo}}/actions/runs/{run['id']}/jobs"
+                                     "?filter=latest&per_page=100", "jobs"):
                 rollup.append({"__typename": "CheckRun", "name": job.get("name"),
                                "workflowName": run.get("name") or "",
                                "status": (job.get("status") or "").upper(),
@@ -1402,9 +1426,7 @@ class Gh:
                                "startedAt": job.get("started_at"), "completedAt": job.get("completed_at"),
                                "detailsUrl": job.get("html_url") or "",
                                "runAttempt": job.get("run_attempt") or run.get("run_attempt")})
-        statuses = self.json(["api", "--paginate", "--slurp",
-                              f"repos/{{owner}}/{{repo}}/commits/{sha}/statuses?per_page=100"]) or []
-        for st in (x for page in statuses for x in (page or [])):
+        for st in self.paginate(f"repos/{{owner}}/{{repo}}/commits/{sha}/statuses?per_page=100"):
             rollup.append({"__typename": "StatusContext", "context": st.get("context"),
                            "state": (st.get("state") or "").upper(),
                            "description": st.get("description") or "", "createdAt": st.get("created_at")})
@@ -1420,9 +1442,7 @@ class Gh:
                          "isCrossRepository"]) or []
         prs = []
         for p in raw:
-            pages = self.json(["api", "--paginate", "--slurp",
-                               f"repos/{{owner}}/{{repo}}/pulls/{p['number']}/reviews?per_page=100"]) or []
-            reviews = [r for page in pages for r in (page or [])]
+            reviews = self.paginate(f"repos/{{owner}}/{{repo}}/pulls/{p['number']}/reviews?per_page=100")
             checks = rollup_checks(self.ci_rollup(p["headRefOid"]) if p.get("headRefOid") else [],
                                    REQUIRED_CHECKS)
             item = {
@@ -1556,9 +1576,7 @@ class Gh:
     def upsert_lint_note(self, n: int, body: str, clean: bool = False) -> None:
         """Keep one lint note per issue: edit it when it changes, add it when
         there is something to say, leave a clean issue without one alone."""
-        pages = self.json(["api", "--paginate", "--slurp",
-                           f"repos/{{owner}}/{{repo}}/issues/{n}/comments?per_page=100"]) or []
-        notes = [c for page in pages for c in (page or [])
+        notes = [c for c in self.paginate(f"repos/{{owner}}/{{repo}}/issues/{n}/comments?per_page=100")
                  if (c.get("body") or "").lstrip().startswith(LINT_MARKER)]
         if notes:
             note = notes[-1]
@@ -1577,8 +1595,7 @@ class Gh:
         self._run(["pr", "merge", str(n), "--disable-auto"], mutating=True)
 
     def upsert_status_issue(self, body: str) -> int | None:
-        found = self.json(["issue", "list", "--label", STATUS_ISSUE, "--state", "open",
-                           "--limit", "1", "--json", "number"]) or []
+        found = self.open_issues_labelled(STATUS_ISSUE)
         if found:
             n = found[0]["number"]
             self._run(["issue", "edit", str(n), "--body-file", "-"], input=body, mutating=True)
@@ -1699,11 +1716,6 @@ def rollup_checks(rollup: list[dict], required=REQUIRED_CHECKS) -> dict:
             "judged": sorted(({k: e[k] for k in ("name", "outcome", "run", "attempt")} for e in judged),
                              key=lambda e: e["name"]),
             "answeredComments": answered["comments"], "answeredAttempts": answered["attempts"]}
-
-
-def rollup_state(rollup: list[dict], required=()) -> str:
-    """pending | success | failure over a head's checks (every check, by default)."""
-    return rollup_checks(rollup, required)["state"]
 
 
 def remote_agent_branches() -> set[str] | None:
@@ -1830,12 +1842,20 @@ def runs_in(entries: list[dict]) -> int:
     return sum(len(e.get("dispatched") or []) for e in entries)
 
 
+def runs_by_kind(entries: list[dict]) -> dict[str, int]:
+    return dict(Counter(d.split()[0] for e in entries for d in e.get("dispatched") or []))
+
+
+def dispatch_label(d: dict) -> str:
+    """`review PR #105`, `implement #5` -- one dispatch item, as the log and the status issue name it."""
+    return f"{d['kind']} " + (f"PR #{d['pr']}" if d.get("pr") else f"#{d.get('issue') or ''}")
+
+
 def tick_entry(out: dict, now: datetime) -> dict:
     return {
         "at": now.isoformat().replace("+00:00", "Z"),
         "paused": out.get("pause_reason") or ("paused" if out.get("paused") else ""),
-        "dispatched": [f"{d['kind']} " + (f"PR #{d['pr']}" if d.get("pr") else f"#{d.get('issue') or ''}")
-                       for d in out.get("dispatch", [])],
+        "dispatched": [dispatch_label(d) for d in out.get("dispatch", [])],
         "awaiting_human": len(out.get("awaiting_human", [])),
         "failed": [x for x in out.get("ops_done", []) + out.get("claims", []) if x.startswith("FAILED")],
         "setup_problems": len(out.get("setup_problems", [])),
@@ -1849,11 +1869,7 @@ def status_body(out: dict, week: list[dict], now: datetime) -> str:
         lines += [f"- {x}" for x in items] if items else [f"_{empty}_"]
         return lines + [""]
 
-    kinds: dict[str, int] = {}
-    for e in week:
-        for d in e.get("dispatched") or []:
-            k = d.split()[0]
-            kinds[k] = kinds.get(k, 0) + 1
+    kinds = runs_by_kind(week)
     stamp = now.strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "<!-- Rewritten by every tick (docs/Pipeline.md § The tick). Edits here are overwritten. -->",
@@ -1863,9 +1879,8 @@ def status_body(out: dict, week: list[dict], now: datetime) -> str:
         "",
     ]
     lines += section("Needs you", out.get("awaiting_human", []), "nothing")
-    lines += section("Dispatched in this tick", [f"{d['kind']} " + (f"PR #{d['pr']}" if d.get("pr")
-                                                  else f"#{d.get('issue') or ''}")
-                                                  for d in out.get("dispatch", [])], "nothing")
+    lines += section("Dispatched in this tick", [dispatch_label(d) for d in out.get("dispatch", [])],
+                     "nothing")
     lines += section("Setup problems", out.get("setup_problems", []), "none")
     lines += [f"**Now:** {len(out.get('in_flight', []))} in flight, "
               f"{len(out.get('waiting', []))} waiting, {len(out.get('deferred', []))} deferred.", ""]
@@ -1893,10 +1908,6 @@ def compute_stats(merged: list[dict], closed: list[dict], ticks: list[dict], now
     prs = [q for q in merged if (parse_time(q.get("mergedAt")) or since) >= since]
     issues = [i for i in closed if (parse_time(i.get("closedAt")) or since) >= since]
     rounds = [q for q in prs if any(l.startswith((FIX_ROUND, CONFLICT_ROUND)) for l in labels_of(q))]
-    kinds: dict[str, int] = {}
-    for e in ticks:
-        for d in e.get("dispatched") or []:
-            kinds[d.split()[0]] = kinds.get(d.split()[0], 0) + 1
     return {
         "days": days,
         "merged_prs": len(prs),
@@ -1909,7 +1920,7 @@ def compute_stats(merged: list[dict], closed: list[dict], ticks: list[dict], now
         "issues_closed": len(issues),
         "issues_that_went_to_triage": sum(1 for i in issues if TRIAGED in labels_of(i)),
         "ticks": len(ticks),
-        "agent_runs": kinds,
+        "agent_runs": runs_by_kind(ticks),
     }
 
 
@@ -1975,11 +1986,7 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
             add("fail", "agent_login", "the repository belongs to an organisation: set agent_login "
                                        "in .claude/pipeline/config.json")
         if login:
-            try:
-                perm = (gh.json(["api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"])
-                        or {}).get("permission")
-            except GhError:
-                perm = None
+            perm = gh.collaborator_permission(login)
             add("ok" if perm in ("admin", "maintain", "write") else "fail", "reviewer bot access",
                 f"{perm}" if perm else "not a collaborator -- run setup-repo")
 
@@ -2004,8 +2011,7 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
     except GhError as e:
         add("warn", "Actions token", f"cannot read: {str(e)[:120]}")
 
-    have = labels_of({"labels": [{"name": n} for n in gh.labels()]})
-    missing = sorted(set(LABELS) - have)
+    missing = sorted(set(LABELS) - gh.labels())
     add("warn" if missing else "ok", "labels",
         f"missing: {', '.join(missing)} -- the next tick creates them" if missing else "all present")
 
@@ -2034,7 +2040,7 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
     return out
 
 
-def make_lint_fn(gh: Gh, open_numbers: set[int]):
+def make_lint_fn(gh: Gh, open_numbers: set[int], allowlist_fn=parse_allowlist):
     cache: dict[int, str | None] = {}
 
     def state(n: int) -> str | None:
@@ -2047,8 +2053,15 @@ def make_lint_fn(gh: Gh, open_numbers: set[int]):
         return cache[n]
 
     def lint(issue: dict) -> LintResult:
-        return lint_body(issue["number"], issue.get("body", ""), parse_allowlist, state)
+        return lint_body(issue["number"], issue.get("body", ""), allowlist_fn, state)
     return lint
+
+
+def cached_allowlist():
+    """parse_allowlist for one run: each call starts bash, and decide() and the
+    lint ask for the same issue's scope up to four times in one survey."""
+    parse = lru_cache(maxsize=None)(lambda body: tuple(parse_allowlist(body)))
+    return lambda body: list(parse(body))
 
 
 def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
@@ -2059,7 +2072,7 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
     for op in plan.ops:
         kind = op["op"]
         n = op.get("number")
-        target = (op.get("kind", "issue") if kind != "set-status" else "issue", n)
+        target = (op.get("kind", "issue"), n)
         if kind == "comment" and target in failed:
             done.append(f"SKIPPED comment {n}: the write it explains did not happen")
             continue
@@ -2070,8 +2083,7 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
                 issue = gh.issue(n)
                 result = lint_fn(issue)
                 gh.set_status(n, result.status, expect=None)
-                gh.upsert_lint_note(n, lint_comment(n, result),
-                                    clean=not (result.problems or result.warnings))
+                gh.upsert_lint_note(n, lint_comment(n, result), clean=result.clean)
             elif kind == "lint-note":
                 gh.upsert_lint_note(n, op["body"], clean=bool(op.get("clean")))
             elif kind == "add-label":
@@ -2147,8 +2159,7 @@ def claim(gh: Gh, item: dict) -> str:
     if kind == "plan":
         # Roadmap planning has no issue of its own, so it gets one: the claim
         # every other tick sees, closed by the planner when it is done.
-        if gh.json(["issue", "list", "--label", PLANNING, "--state", "open", "--limit", "1",
-                    "--json", "number"]):
+        if gh.open_issues_labelled(PLANNING):
             raise StaleState("a roadmap planner is already running")
         n = gh.create_issue("[pipeline] Planning the roadmap",
                             "**Pipeline:** the roadmap planner is running. It closes this issue "
@@ -2189,8 +2200,9 @@ def cmd_run(args) -> int:
         "require_protection": bool(CONFIG.get("require_protection", True)),
         "runs_today": runs_in(read_tick_log(log_dir, now - timedelta(hours=24))),
     }
-    lint_fn = make_lint_fn(gh, {i["number"] for i in issues})
-    plan = decide(snap, parse_allowlist, lint_fn)
+    allowlist_fn = cached_allowlist()
+    lint_fn = make_lint_fn(gh, {i["number"] for i in issues}, allowlist_fn)
+    plan = decide(snap, allowlist_fn, lint_fn)
     out = plan.to_json()
     out["setup_problems"] = out["setup_problems"] + synced + preflight() + CONFIG_WARNINGS
     if args.apply:
@@ -2198,10 +2210,8 @@ def cmd_run(args) -> int:
         made = gh.ensure_labels()
         if made:
             out["labels_created"] = made
-    if args.apply and plan.paused:
-        out["ops_done"] = apply_ops(gh, plan, lint_fn)     # only turning auto-merge off
+        out["ops_done"] = apply_ops(gh, plan, lint_fn)     # paused: only turning auto-merge off
     if args.apply and not plan.paused:
-        out["ops_done"] = apply_ops(gh, plan, lint_fn)
         out["claims"] = []
         for item in plan.dispatch:
             try:
@@ -2311,8 +2321,7 @@ def cmd_lint(args) -> int:
             report["applied"] = True
     if args.apply and status in LINT_OWNED and WORKING not in labels and "skipped" not in report:
         # On every edit, changed status or not: the note says what the lint sees now.
-        gh.upsert_lint_note(args.issue, lint_comment(args.issue, result),
-                            clean=not (result.problems or result.warnings))
+        gh.upsert_lint_note(args.issue, lint_comment(args.issue, result), clean=result.clean)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 
@@ -2339,7 +2348,7 @@ def cmd_relint(args) -> int:
                     changed[-1]["skipped"] = "moved since the survey"
                     continue
                 gh.upsert_lint_note(issue["number"], lint_comment(issue["number"], result),
-                                    clean=not (result.problems or result.warnings))
+                                    clean=result.clean)
     print(json.dumps({"changed": changed}, indent=2, ensure_ascii=False))
     return 0
 
@@ -2518,12 +2527,7 @@ def cmd_setup_repo(args) -> int:
         report.append(f"reviewer bot: NO TOKEN at {reviewer_token_path()} -- create it per "
                       "docs/Pipeline.md § Setup, then re-run")
     else:
-        perm = None
-        try:
-            perm = (gh.json(["api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"])
-                    or {}).get("permission")
-        except GhError:
-            pass
+        perm = gh.collaborator_permission(login)
         if perm in ("admin", "maintain", "write"):
             report.append(f"reviewer bot: {login} has {perm} access")
         else:

@@ -28,7 +28,8 @@ class FakeGh(p.Gh):
         self.labels_of = {("issue", n): set(ls) for n, ls in (issues or {}).items()}
         self.labels_of.update({("pr", n): set(ls) for n, ls in (prs or {}).items()})
         self.writes: list[list[str]] = []
-        self.responses = responses or []   # [(predicate(args) -> bool, stdout or Exception)]
+        # [(predicate(args) -> bool, stdout, a function of args giving stdout, or an Exception)]
+        self.responses = responses or []
         self.next_issue = 900
 
     def _run(self, args, input=None, as_reviewer=False, check=True, mutating=False):
@@ -36,7 +37,7 @@ class FakeGh(p.Gh):
             if match(args):
                 if isinstance(out, Exception):
                     raise out
-                return out
+                return out(args) if callable(out) else out
         kind = "pr" if args[0] == "pr" else "issue"
         if args[:1] in (["issue"], ["pr"]) and args[1] == "view" and "labels" in args:
             return json.dumps({"labels": [{"name": l} for l in sorted(self.labels_of.get((kind, int(args[2])), set()))]})
@@ -207,8 +208,7 @@ class ReleaseTests(unittest.TestCase):
 
 class LintNoteUpsertTests(unittest.TestCase):
     def gh_with(self, comments):
-        import json as _json
-        return FakeGh(responses=[(lambda a: "--slurp" in a and "/comments" in a[-1], _json.dumps([comments]))])
+        return FakeGh(responses=[(lambda a: "--slurp" in a and "/comments" in a[-1], json.dumps([comments]))])
 
     def test_a_clean_issue_without_a_note_gets_none(self):
         gh = self.gh_with([])
@@ -269,17 +269,6 @@ def job(name, conclusion="success", status="completed", run_id=42, attempt=None,
             "html_url": f"https://github.com/o/r/actions/runs/{run_id}/job/{run_id}0"}
 
 
-class CallableFakeGh(FakeGh):
-    """A FakeGh whose canned answer may be a function of the arguments."""
-    def _run(self, args, input=None, as_reviewer=False, check=True, mutating=False):
-        for match, out in self.responses:
-            if match(args):
-                if isinstance(out, Exception):
-                    raise out
-                return out(args) if callable(out) else out
-        return super()._run(args, input, as_reviewer, check, mutating)
-
-
 class OpenPrsTests(unittest.TestCase):
     def test_gh_json_becomes_the_snapshot(self):
         listing = [{
@@ -290,7 +279,7 @@ class OpenPrsTests(unittest.TestCase):
         pages = [[{"user": {"login": "bot"}, "state": "COMMENTED", "commit_id": "abc",
                    "submitted_at": "2026-09-27T10:40:00Z"}],
                  [{"user": None, "state": "APPROVED", "commit_id": "old", "submitted_at": "x"}]]
-        gh = CallableFakeGh(responses=[
+        gh = FakeGh(responses=[
             (lambda a: a[:2] == ["pr", "list"], json.dumps(listing)),
             *actions_responses("abc", jobs={42: [job("ci", "failure")]},
                                statuses=[{"context": p.REVIEW_STATUS, "state": "success",
@@ -310,7 +299,7 @@ class OpenPrsTests(unittest.TestCase):
         # fine-grained token cannot have: the first live tick died on it.
         asked = []
         listing = [{"number": 105, "headRefOid": "abc"}]
-        gh = CallableFakeGh(responses=[(lambda a: asked.append(a) and False, ""),
+        gh = FakeGh(responses=[(lambda a: asked.append(a) and False, ""),
                                        (lambda a: a[:2] == ["pr", "list"], json.dumps(listing))])
         gh.open_prs()
         gh.main_health()
@@ -322,7 +311,7 @@ class OpenPrsTests(unittest.TestCase):
 
 class CiRollupTests(unittest.TestCase):
     def test_jobs_and_statuses_become_the_rollup(self):
-        gh = CallableFakeGh(responses=actions_responses(
+        gh = FakeGh(responses=actions_responses(
             "abc",
             runs=[{"id": 42, "name": "CI", "run_attempt": 1}, {"id": 43, "name": "PR contract", "run_attempt": 3}],
             jobs={42: [job("ci"), job("tooling", None, "in_progress")],
@@ -341,18 +330,18 @@ class CiRollupTests(unittest.TestCase):
                           ("tooling", "pending")])
 
     def test_the_run_attempt_comes_from_the_run_when_the_job_lacks_it(self):
-        gh = CallableFakeGh(responses=actions_responses("abc", jobs={42: [job("ci", "failure")]}))
+        gh = FakeGh(responses=actions_responses("abc", jobs={42: [job("ci", "failure")]}))
         out = p.rollup_checks(gh.ci_rollup("abc"), ("ci",))
         self.assertEqual(out["failed"], [{"name": "ci", "run": 42, "attempt": 2}])
 
     def test_the_default_branch_is_read_at_its_head(self):
-        gh = CallableFakeGh(responses=[
+        gh = FakeGh(responses=[
             (lambda a: a[:2] == ["api", "repos/{owner}/{repo}/commits/" + p.DEFAULT_BRANCH], "def\n"),
             *actions_responses("def", jobs={42: [job("ci", "failure"), job("tooling")]})])
         self.assertEqual(gh.main_health(), {"sha": "def", "state": "failure", "red": ["ci"]})
 
     def test_a_refused_read_is_unknown_health_not_green(self):
-        gh = CallableFakeGh(responses=[
+        gh = FakeGh(responses=[
             (lambda a: a[:2] == ["api", "repos/{owner}/{repo}/commits/" + p.DEFAULT_BRANCH], "def\n"),
             (lambda a: any("actions/runs" in x for x in a), p.GhError("HTTP 403: Resource not accessible"))])
         self.assertIsNone(gh.main_health())
@@ -360,7 +349,7 @@ class CiRollupTests(unittest.TestCase):
 
 class PrChecksTests(unittest.TestCase):
     def gh(self, jobs, sha="abc"):
-        return CallableFakeGh(responses=[
+        return FakeGh(responses=[
             (lambda a: a[:3] == ["pr", "view", "105"], json.dumps({"headRefOid": sha})),
             *actions_responses(sha, jobs={42: jobs})])
 
