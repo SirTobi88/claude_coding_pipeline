@@ -19,7 +19,12 @@ jobs:
   lint:
     # `labeled` only matters when the label is agent-task: that is an issue
     # entering the pipeline. Every other label change is the pipeline's own.
-    if: github.event.action != 'labeled' || github.event.label.name == 'agent-task'
+    # Only agent-task issues are linted, so no runner starts for the rest --
+    # the status issue alone is rewritten by every tick. A closed issue of any
+    # kind may be what another issue is blocked by.
+    if: >-
+      (github.event.action != 'labeled' || github.event.label.name == 'agent-task')
+      && (github.event.action == 'closed' || contains(github.event.issue.labels.*.name, 'agent-task'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
