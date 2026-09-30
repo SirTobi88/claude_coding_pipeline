@@ -117,7 +117,12 @@ time, so do not serialise issues over a collision a worktree already solves.
 - **Non-goals**: name the adjacent thing an agent will be tempted to fix.
 - **Definition of done**: every line is a command that exits 0 or a named
   artefact. "Works correctly" is not a line — if it cannot be a command, the
-  missing harness is what should be filed first.
+  missing harness is what should be filed first. The implementer runs each line
+  unattended, in `dontAsk` mode, so each is **one plain command**: no shell
+  variables, `$?`, `;`-chains, `$(…)` or `!` (`docs/AgentEnvironment.md`
+  § Permissions). For an absence, write the command and what it must print:
+  ``grep -c 'The repo has none' docs/x.md`` prints `0`. `git grep -n '<text>' --
+  <path>` and `git diff --name-only origin/<default>...HEAD` are plain too.
 - **Blocked by**: real issue numbers, or "nothing".
 - **Size**: if it does not fit "one branch, one review sitting", split it.
 

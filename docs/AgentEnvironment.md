@@ -78,6 +78,20 @@ asked about. What that allows, and why:
   starts using a new command, add it to that list and to the rules together.
   Rules match text, so they limit the usual commands; they are not a boundary
   (`docs/Pipeline.md` § *What binds an agent*).
+- **How a command must look** — Claude Code checks each Bash call against the
+  rules, and what it cannot check is refused like an unlisted command. So an
+  agent runs **one plain command per call**: no shell variables, `$?`,
+  `;`-chains, heredocs or `$(…)`. `cd <worktree> && <command>` and a pipe into
+  `head` or `grep` pass. Files are changed with the Edit and Write tools, never
+  with `python`, `sed -i` or `cat >`. `git -C` takes the worktree's path
+  relative to the repository root (`.claude/worktrees/<name>`), never an
+  absolute one. What was refused in practice, in one implementer run: a
+  `python - <<'E'` edit, a done-check chain (`f=…; ! grep … $f; echo a=$?`),
+  and `git -C E:/…/worktrees/<name> diff`.
+- **A refused command** is rewritten once in that form. Still refused, the job
+  cannot finish unattended: the agent commits and pushes what it has, escalates
+  naming the command, and releases its claim. Stopping silently leaves the item
+  claimed until the claim goes stale.
 - **Edits** — inside `.claude/worktrees/` (every implementer and reviewer works
   in one) and `.pipeline-tmp/`, nowhere else.
 - **Scratch files** — PR bodies, issue bodies and review reports go to
