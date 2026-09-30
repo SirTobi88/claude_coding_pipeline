@@ -30,7 +30,19 @@ SCOPE_COMPANION_SUFFIXES="${SCOPE_COMPANION_SUFFIXES-}"
 # § *Branches, commits, PRs*; anything else -- main, review-<N>, a scratch
 # branch -- is deliberately unbound by an allowlist.
 scope_issue_from_branch() {
-    printf '%s' "$1" | sed -n 's|^agent/\([0-9][0-9]*\)-.*$|\1|p'
+    # In the shell, not through sed: this runs on every edit.
+    case "$1" in agent/[0-9]*-*) ;; *) return 0 ;; esac
+    local n="${1#agent/}"
+    n="${n%%-*}"
+    case "$n" in *[!0-9]*) return 0 ;; esac
+    printf '%s' "$n"
+}
+
+# jq, minus the CR that jq on Windows ends every line with: a path with a
+# stray \r matches no allowlist entry. The edit-time guard spells the same
+# pipe out inline, to spare the fork on every edit.
+scope_jq() {
+    jq "$@" | tr -d '\r'
 }
 
 # Cache path for one issue's allowlist. Keyed by repository as well as issue
@@ -39,9 +51,10 @@ scope_issue_from_branch() {
 _scope_cache_path() {
     # The readable part alone is lossy -- `tool-x` and `tool_x` both become
     # `tool_x` -- so a checksum of the exact identity goes with it.
-    local repo sum
-    repo="$(printf '%s' "${2:-}" | tr -c 'A-Za-z0-9' '_')"
-    sum="$(printf '%s' "${2:-}" | cksum | cut -d' ' -f1)"
+    local repo="${2:-}" sum
+    repo="${repo//[!A-Za-z0-9]/_}"
+    sum="$(printf '%s' "${2:-}" | cksum)"
+    sum="${sum%% *}"
     printf '%s/pipeline-scope-%s-%s-%s.list' "${TMPDIR:-/tmp}" "${repo:-here}" "$sum" "$1"
 }
 
@@ -269,5 +282,6 @@ _scope_entry_covers() {
 
 # Number of `/` in a path.
 _scope_depth() {
-    printf '%s' "$1" | tr -cd '/' | wc -c | tr -d ' '
+    local slashes="${1//[!\/]/}"
+    printf '%s' "${#slashes}"
 }

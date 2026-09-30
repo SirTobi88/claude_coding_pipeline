@@ -44,8 +44,15 @@ role="${1:-}"
 payload="$(cat)"
 
 if command -v jq >/dev/null 2>&1; then
-    cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null | tr -d '\r')"
-    agent="$(printf '%s' "$payload" | jq -r '.agent_type // empty' 2>/dev/null | tr -d '\r')"
+    # One jq call, as this runs before every Bash command: the agent type on
+    # the first line, then the command, which may span lines.
+    fields="$(printf '%s' "$payload" \
+              | jq -r '"\(.agent_type // "")\n\(.tool_input.command // "")"' 2>/dev/null | tr -d '\r')"
+    agent="${fields%%"
+"*}"
+    cmd="${fields#"$agent"}"
+    cmd="${cmd#"
+"}"
 else
     cmd="$payload"
     agent="$(printf '%s' "$payload" | sed -n 's/.*"agent_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
@@ -77,9 +84,11 @@ if [ -n "$role" ] || [ -n "$agent" ]; then subagent=1; fi
 
 # The token file's name, from config.json without starting Python on every
 # Bash call. The default name is matched too, in case config.json moved it.
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${BASH_SOURCE[0]}" in */*) here="${BASH_SOURCE[0]%/*}" ;; *) here=. ;; esac
 token_name="$(sed -n 's/.*"reviewer_token_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-              "$here/../pipeline/config.json" 2>/dev/null | head -1)"
+              "$here/../pipeline/config.json" 2>/dev/null)"
+token_name="${token_name%%"
+"*}"   # the first match
 token_name="${token_name##*/}"
 
 # Who may act as the bot: the reviewer subagent, and a main session that is
@@ -97,11 +106,15 @@ uses_bot=0
 # The wrapper where it is called -- at the start of a command, after a
 # separator, inside $( ), or behind an interpreter -- not wherever it is
 # named: a grep of the docs for it is not a use. The token is different: any
-# command that names it or its file reads it.
-if printf '%s' "$norm" \
-     | grep -qE '(^|[;&|(`]|\$\() *((bash|sh|exec|env|command|xargs|nohup|time)( +-[^ ]+)*( +[A-Za-z_]+=[^ ]*)* +)*([^ ;&|()`]*/)?gh-reviewer( |$)'; then
-    uses_bot=1
-fi
+# command that names it or its file reads it. (The `case` spares every other
+# command the grep.)
+case "$norm" in
+    *gh-reviewer*)
+        if printf '%s' "$norm" \
+             | grep -qE '(^|[;&|(`]|\$\() *((bash|sh|exec|env|command|xargs|nohup|time)( +-[^ ]+)*( +[A-Za-z_]+=[^ ]*)* +)*([^ ;&|()`]*/)?gh-reviewer( |$)'; then
+            uses_bot=1
+        fi ;;
+esac
 case "$cmd" in
     *PIPELINE_REVIEWER_TOKEN*|*reviewer-token*) uses_bot=1 ;;
 esac
@@ -149,12 +162,15 @@ esac
 
 # Where it is run, not wherever it is named: a heredoc or a grep that only
 # mentions it is not a call.
-if printf '%s' "$norm" \
-     | grep -qE '(^|[;&|(]) *((python3?|py) )?([^ ;&|]*/)?pipeline(\.py)? setup-repo'; then
-    refuse "setup-repo is run by the owner in a terminal, not from a Claude session." \
+case "$norm" in
+    *setup-repo*)
+        if printf '%s' "$norm" \
+             | grep -qE '(^|[;&|(]) *((python3?|py) )?([^ ;&|]*/)?pipeline(\.py)? setup-repo'; then
+            refuse "setup-repo is run by the owner in a terminal, not from a Claude session." \
 "It sets branch protection and needs the owner's own login, which no agent
 holds (docs/Pipeline.md § Setup, step 4)."
-fi
+        fi ;;
+esac
 
 # Pushes: never rewrite or delete remote history; a subagent pushes only to an
 # agent/ branch.
