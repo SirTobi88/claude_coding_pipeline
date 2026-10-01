@@ -430,12 +430,17 @@ expect_eq "bash guard: a quoted delimiter with a dash ends"     2 "$(bguard "cat
 text
 END-X
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+# The 500 KB command goes to jq on stdin, not as an argument: Linux caps one
+# argument at 128 KiB and Windows a whole command line at 32K characters.
 long_body="$(i=0; while [ $i -lt 20000 ]; do echo "line $i of a long heredoc"; i=$((i + 1)); done)"
+long_payload="$WORK/long-payload.json"
+printf 'cat > f <<EOF\n%s\nEOF\n.claude/bin/gh-reviewer api user' "$long_body" \
+    | jq -Rs '{tool_input: {command: .}, agent_type: "github-issue-resolver"}' > "$long_payload"
+expect_eq "bash guard: the long payload was built"              yes \
+    "$([ "$(wc -c < "$long_payload")" -gt 400000 ] && echo yes || echo no)"
 long_start=$SECONDS
-expect_eq "bash guard: a call after a 20000-line heredoc"       2 "$(bguard "cat > f <<EOF
-$long_body
-EOF
-.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a call after a 20000-line heredoc"       2 \
+    "$("$BASH" "$HOOKS/bash_guard.sh" implementer < "$long_payload" >/dev/null 2>&1; echo $?)"
 expect_eq "bash guard: a 20000-line heredoc well inside the hook timeout" yes \
     "$([ $((SECONDS - long_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
