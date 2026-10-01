@@ -46,8 +46,8 @@ worktrees.
 - **Interface** is signatures to conform to, quoted verbatim.
 - **Files in scope** is an allowlist. Read anything; write only what is listed.
 - **Non-goals** names the adjacent thing you will be tempted to fix. Leave it.
-- **Definition of done** is commands that exit 0. Do not claim an item passed if
-  you did not watch it pass.
+- **Definition of done** is plain commands that exit 0, or a command and
+  what it must print. Do not claim an item passed if you did not watch it pass.
 
 **Four things are escalated, never solved:** the work needs a file outside the
 allowlist; the issue contradicts a design doc or a locked decision; the quoted
