@@ -85,14 +85,16 @@ Follow `docs/Pipeline.md` § *Setup*:
 
 1. Tools on the pipeline machine: `gh`, `jq`, Python ≥ 3.9, bash, your
    toolchain. Fully restart the Claude app afterwards.
-2. The agents' token: fine-grained, this repository only, no Administration and
-   no Workflows permission, as the credential the tick runs with.
+2. The agents' token: fine-grained, this repository only,
+   Administration read-only, no Administration write and no Workflows
+   permission, as the only GitHub credential the tick's OS user holds.
 3. A reviewer bot account with a classic `repo` token at `reviewer_token_file`.
 4. `.claude/bin/pipeline setup-repo --dry-run`, then without `--dry-run`, with
    your own login. Requires branch protection on your plan (public repo, or
    GitHub Pro/Team).
-5. One tick by hand in `dontAsk` mode: `/pipeline-tick`. Then schedule it,
-   still in `dontAsk`.
+5. `.claude/bin/pipeline doctor`, then one tick by hand in `dontAsk` mode:
+   `/pipeline-tick`. Then schedule it, still in `dontAsk` and with
+   `PIPELINE_TICK=1` in its environment.
 
 Commit the adoption itself **before** step 4 — afterwards the default branch only
 accepts reviewed pull requests.
