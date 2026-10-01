@@ -323,10 +323,12 @@ class RollupTests(unittest.TestCase):
         running = {"__typename": "CheckRun", "name": "b", "status": "IN_PROGRESS", "conclusion": ""}
         failed = {"__typename": "CheckRun", "name": "c", "status": "COMPLETED", "conclusion": "FAILURE"}
         status_ok = {"__typename": "StatusContext", "state": "SUCCESS", "context": "x"}
-        self.assertEqual(p.rollup_state([]), "pending")
-        self.assertEqual(p.rollup_state([ok, status_ok]), "success")
-        self.assertEqual(p.rollup_state([ok, running]), "pending")
-        self.assertEqual(p.rollup_state([running, failed]), "failure")
+        def state(rollup):
+            return p.rollup_checks(rollup, ())["state"]   # no required checks: every check counts
+        self.assertEqual(state([]), "pending")
+        self.assertEqual(state([ok, status_ok]), "success")
+        self.assertEqual(state([ok, running]), "pending")
+        self.assertEqual(state([running, failed]), "failure")
 
 
 class DecideIssueTests(unittest.TestCase):
@@ -1129,6 +1131,14 @@ class PrAdmissionTests(unittest.TestCase):
         self.assertEqual(kinds(plan), [("review", 5, 105)])
 
 
+def as_github_returns_it(payload):
+    """A protection payload in the GET shape: booleans wrapped as {"enabled": x}."""
+    out = dict(payload)
+    for key in ("enforce_admins", "required_linear_history", "allow_force_pushes", "allow_deletions"):
+        out[key] = {"enabled": payload[key]}
+    return out
+
+
 class ProtectionTests(unittest.TestCase):
     # These pin the rules GitHub enforces. An agent PR that "simplifies" the
     # payload changes a test too -- and both are control paths, so a human
@@ -1147,20 +1157,13 @@ class ProtectionTests(unittest.TestCase):
                          set(p.REQUIRED_CHECKS))
         self.assertEqual({c["app_id"] for c in payload["required_status_checks"]["checks"]}, {4242})
 
-    def as_github_returns_it(self, payload):
-        """The GET shape: booleans wrapped as {"enabled": x}."""
-        out = dict(payload)
-        for key in ("enforce_admins", "required_linear_history", "allow_force_pushes", "allow_deletions"):
-            out[key] = {"enabled": payload[key]}
-        return out
-
     def test_no_drift_when_github_matches(self):
         payload = p.protection_payload()
-        self.assertEqual(p.protection_drift(self.as_github_returns_it(payload), payload), [])
+        self.assertEqual(p.protection_drift(as_github_returns_it(payload), payload), [])
 
     def test_drift_is_reported(self):
         payload = p.protection_payload()
-        actual = self.as_github_returns_it(payload)
+        actual = as_github_returns_it(payload)
         actual["enforce_admins"] = {"enabled": False}
         actual["required_status_checks"] = {"checks": [{"context": "ci", "app_id": 1}]}
         drift = p.protection_drift(actual, payload)

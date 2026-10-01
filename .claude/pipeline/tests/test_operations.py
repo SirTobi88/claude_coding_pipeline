@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pipeline as p  # noqa: E402
 from test_github import FakeGh  # noqa: E402
-from test_pipeline import LIM, NOW, OLD, issue, ops, pr, review, run  # noqa: E402
+from test_pipeline import LIM, NOW, OLD, as_github_returns_it, issue, ops, pr, review, run  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -223,10 +223,7 @@ class ProtectionStateTests(unittest.TestCase):
         forbidden = FakeGh(responses=[(lambda a: "protection" in a[1],
                                        p.GhError("gh api ...: Resource not accessible (HTTP 403)"))])
         self.assertEqual(forbidden.protection_state()["state"], "unreadable")
-        payload = p.protection_payload(15368)
-        good = dict(payload)
-        for key in ("enforce_admins", "required_linear_history", "allow_force_pushes", "allow_deletions"):
-            good[key] = {"enabled": payload[key]}
+        good = as_github_returns_it(p.protection_payload(15368))
         ok = FakeGh(responses=[(lambda a: "protection" in a[1], json.dumps(good)),
                                (lambda a: a[:2] == ["api", "apps/github-actions"], json.dumps({"id": 15368}))])
         self.assertEqual(ok.protection_state(), {"state": "ok", "problems": []})
