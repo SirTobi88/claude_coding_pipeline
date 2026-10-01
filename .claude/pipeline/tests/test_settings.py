@@ -75,6 +75,11 @@ USED = [
     "git checkout -B agent/12-fix-105 origin/agent/12-add-login",
     "git fetch origin main",
     "git ls-remote --heads origin 'agent/12-*'",
+    # The plain done-checks the prompts recommend (docs/AgentEnvironment.md § Permissions).
+    "grep -c 'The repo has none' docs/x.md",
+    "git grep -n 'pipeline-tmp' -- .claude/bin/gh-reviewer",
+    "git -C .claude/worktrees/agent-x diff --stat",
+    "git diff --name-only origin/main...HEAD",
     "gh pr ready 105",
     "gh pr edit 105 --body-file .pipeline-tmp/pr-12.md",
     ".claude/bin/pipeline release pr 105 --round-label fix-round-1",

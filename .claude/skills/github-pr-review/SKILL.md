@@ -63,6 +63,15 @@ this commit**, and § 9 submits the verdict for exactly this string. Shell
 variables do not survive from one command to the next: wherever this skill
 names `<sha>`, write the literal value.
 
+**The pipeline runs you in `dontAsk` mode** (`docs/AgentEnvironment.md`
+§ Permissions). Run one plain command per Bash call, with no shell variables,
+`$?`, `;`-chains, heredocs or `$(…)`, and fix files with the Edit tool.
+- A done-check written as a chain (`! grep -nF '<text>' <file>`) is run as its
+  plain part, `grep -cF '<text>' <file>`, and judged by what it prints.
+- A command that is refused even in plain form is not a defect of the PR. It
+  counts like a tool this machine lacks (§ 3): name the command in the verdict
+  and judge the rest.
+
 ## 1. Worktree
 
 Review in a worktree, never by switching the parent checkout. It is detached —

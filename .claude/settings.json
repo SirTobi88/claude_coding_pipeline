@@ -44,6 +44,8 @@
       "Bash(git status *)",
       "Bash(git log *)",
       "Bash(git diff *)",
+      "Bash(git grep *)",
+      "Bash(grep *)",
       "Bash(git show *)",
       "Bash(git rev-parse *)",
       "Bash(git ls-remote *)",
