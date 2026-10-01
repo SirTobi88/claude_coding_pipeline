@@ -423,6 +423,21 @@ expect_eq "bash guard: a <<- heredoc ends at a tabbed delimiter" 2 "$(bguard "ca
 	text
 	EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a <<\\EOF heredoc is a mention"           0 "$(bguard "cat > f <<\\EOF
+.claude/bin/gh-reviewer api user
+EOF" github-issue-resolver implementer)"
+expect_eq "bash guard: a quoted delimiter with a dash ends"     2 "$(bguard "cat > f <<'END-X'
+text
+END-X
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+long_body="$(i=0; while [ $i -lt 20000 ]; do echo "line $i of a long heredoc"; i=$((i + 1)); done)"
+long_start=$SECONDS
+expect_eq "bash guard: a call after a 20000-line heredoc"       2 "$(bguard "cat > f <<EOF
+$long_body
+EOF
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a 20000-line heredoc well inside the hook timeout" yes \
+    "$([ $((SECONDS - long_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\

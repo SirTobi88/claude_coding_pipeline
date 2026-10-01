@@ -63,36 +63,42 @@ fi
 
 # A newline ends a command as `;` does, so a call on a later line is checked
 # like one on the first. Two exceptions: a backslash-newline continues the
-# line, and a heredoc body is a mention, never a call -- its lines are joined
-# without a separator, so no anchored check sees them as a command start.
-# Pure bash, and only for a command that spans lines: this runs before every
-# Bash call.
+# line, and a heredoc body is treated as a mention: its lines are joined without
+# a separator, so no anchored check sees them as a command start (`bash <<EOF`
+# runs its body, and that gets past this, as quoting does). Pure bash, and only
+# for a command that spans lines: this runs before every Bash call. The pieces
+# are joined once at the end -- appending to one string is quadratic, and a long
+# heredoc would run the hook into its timeout, which skips the guard.
 nl='
 '
 lines="$cmd"
 case "$cmd" in
     *"$nl"*)
-        heredoc_start='(^|[^<])<<(-?)[[:space:]]*['"'"'"]?([A-Za-z_][A-Za-z0-9_]*)['"'"'"]?'
-        lines="" delim="" strip_tabs="" cont=""
+        # <<EOF, <<-EOF, <<'END-X', <<"EOF", <<\EOF; not a <<< here-string.
+        heredoc_start='(^|[^<])<<(-?)[[:space:]]*\\?['"'"'"]?([^[:space:];&|<>()'"'"'"\\]+)'
+        parts=() delim="" strip_tabs="" cont=""
         while IFS= read -r line || [ -n "$line" ]; do
             if [ -n "$delim" ]; then
                 end="$line"
                 [ -n "$strip_tabs" ] && end="${end#"${end%%[!	]*}"}"
                 [ "$end" = "$delim" ] && delim=""
-                lines="$lines $line"
+                parts+=(" $line")
                 continue
             fi
-            if [ -n "$cont" ] || [ -z "$lines" ]; then
-                lines="$lines $line"
+            if [ -n "$cont" ] || [ ${#parts[@]} -eq 0 ]; then
+                parts+=(" $line")
             else
-                lines="$lines ; $line"
+                parts+=(" ; $line")
             fi
             cont=""
-            case "$line" in *\\) lines="${lines%\\}" cont=1 ;; esac
+            case "$line" in
+                *\\) last=$((${#parts[@]} - 1)); parts[last]="${parts[last]%\\}"; cont=1 ;;
+            esac
             if [[ $line =~ $heredoc_start ]]; then
                 delim="${BASH_REMATCH[3]}" strip_tabs="${BASH_REMATCH[2]}"
             fi
         done <<< "$cmd"
+        saved_ifs="$IFS"; IFS=; lines="${parts[*]}"; IFS="$saved_ifs"
         ;;
 esac
 
