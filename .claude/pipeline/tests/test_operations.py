@@ -107,8 +107,11 @@ class TickEnvironmentTests(unittest.TestCase):
           "  - Token: gho_************************************\n"
 
     def reasons(self, env, stdout, returncode=0):
-        return p.tick_environment(env=env, run=lambda *a, **k: SimpleNamespace(
-            returncode=returncode, stdout=stdout, stderr=""))
+        def fake_run(args, **_):
+            if args[0] == "git":
+                return SimpleNamespace(returncode=0, stdout="https://github.com/o/r.git\n", stderr="")
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return p.tick_environment(env=env, run=fake_run)
 
     def test_the_tick_environment_is_empty(self):
         self.assertEqual(self.reasons({"PIPELINE_TICK": "1"}, self.PAT), [])
@@ -138,7 +141,35 @@ class TickEnvironmentTests(unittest.TestCase):
         self.assertNotIn("****", out)
 
     def test_not_logged_in(self):
-        self.assertTrue(any("not logged in" in r for r in self.reasons({"PIPELINE_TICK": "1"}, "", 1)))
+        self.assertTrue(any("no active login" in r for r in self.reasons({"PIPELINE_TICK": "1"}, "", 1)))
+
+    def test_a_failing_inactive_account_does_not_hold(self):
+        # gh exits 1 when any account fails -- an expired keyring login behind
+        # a good GH_TOKEN included. What the active account prints decides.
+        self.assertEqual(self.reasons({"PIPELINE_TICK": "1"}, self.PAT, returncode=1), [])
+
+    def test_only_the_repositorys_host_counts(self):
+        calls = []
+
+        def fake_run(args, **_):
+            calls.append(args)
+            if args[0] == "git":
+                return SimpleNamespace(returncode=0, stdout="git@github.com:o/r.git\n", stderr="")
+            host = args[args.index("--hostname") + 1]
+            out = self.GHO if host == "github.com" else self.PAT.replace("github.com", host)
+            return SimpleNamespace(returncode=0, stdout=out, stderr="")
+        reasons = p.tick_environment(env={"PIPELINE_TICK": "1"}, run=fake_run)
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("gho_", reasons[0])
+        self.assertIn(["gh", "auth", "status", "--active", "--hostname", "github.com"], calls)
+        self.assertEqual(p.tick_environment(env={"PIPELINE_TICK": "1", "GH_HOST": "ghe.example.com"},
+                                            run=fake_run), [])
+
+    def test_the_host_comes_from_the_remote(self):
+        for url, host in (("https://github.com/o/r.git", "github.com"), ("git@ghe.example.com:o/r.git",
+                          "ghe.example.com"), ("ssh://git@ghe.example.com/o/r", "ghe.example.com"), ("", "github.com")):
+            with self.subTest(url=url):
+                self.assertEqual(p.repo_host({}, lambda *a, **k: SimpleNamespace(stdout=url)), host)
 
 
 class BudgetTests(unittest.TestCase):
