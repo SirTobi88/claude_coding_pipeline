@@ -444,6 +444,11 @@ expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git
 agent/1-x" github-issue-resolver implementer)"
 expect_eq "bash guard: a continued push onto main"              2 "$(bguard "git push origin \\
 main" github-issue-resolver implementer)"
+expect_eq "bash guard: a second push to main, on a later line"  2 "$(bguard "git push origin agent/1-x
+git push origin main" github-issue-resolver implementer)"
+expect_eq "bash guard: a second push, forced, after ;"          2 "$(bguard "git push origin agent/1-x; git push --force origin agent/1-x" github-issue-resolver implementer)"
+expect_eq "bash guard: the owner's second push deletes main"    2 "$(bguard "git push origin agent/1-x && git push --delete origin main" "")"
+expect_eq "bash guard: two pushes to agent/ branches"           0 "$(bguard "git push origin agent/1-x && git push origin agent/2-y" github-issue-resolver implementer)"
 expect_eq "bash guard: a push to main on a later line"          2 "$(bguard "ls
 git push origin main" github-issue-resolver implementer)"
 

@@ -216,37 +216,43 @@ holds (docs/Pipeline.md § Setup, step 4)."
 esac
 
 # Pushes: never rewrite or delete remote history; a subagent pushes only to an
-# agent/ branch.
-case "$norm" in
-    *"git push"*)
-        after="${norm#*git push}"
-        remote=""
-        for tok in $after; do
-            case "$tok" in
-                --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
-                    refuse "no force, delete or mirror pushes." \
+# agent/ branch. Every push in the command is checked, not only the first: an
+# allowed push must not carry a forbidden one behind a separator.
+rest="$norm"
+while :; do
+    case "$rest" in
+        *"git push"*) ;;
+        *) break ;;
+    esac
+    after="${rest#*git push}"
+    rest="$after"
+    remote=""
+    for tok in $after; do
+        case "$tok" in
+            --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
+                refuse "no force, delete or mirror pushes." \
 "History on GitHub is shared state; a rewritten or deleted branch loses other
 agents' and reviewers' work. Push new commits instead." ;;
-                -*|*">"*|*"<"*) continue ;;
-                "&&"|"||"|";"|"|") break ;;
-            esac
-            if [ -z "$remote" ]; then remote="$tok"; continue; fi
-            case "$tok" in
-                +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
+            -*|*">"*|*"<"*) continue ;;
+            "&&"|"||"|";"|"|") break ;;
+        esac
+        if [ -z "$remote" ]; then remote="$tok"; continue; fi
+        case "$tok" in
+            +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
 "Push new commits to your agent/ branch instead." ;;
-            esac
-            dest="${tok#*:}"
-            dest="${dest#refs/heads/}"
-            if [ "$subagent" = 1 ]; then
-                case "$dest" in
-                    agent/*) ;;
-                    *) refuse "an agent pushes only to its agent/<N>- branch." \
+        esac
+        dest="${tok#*:}"
+        dest="${dest#refs/heads/}"
+        if [ "$subagent" = 1 ]; then
+            case "$dest" in
+                agent/*) ;;
+                *) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-                esac
-            fi
-        done ;;
-esac
+            esac
+        fi
+    done
+done
 
 labels_something=0
 case "$norm" in
