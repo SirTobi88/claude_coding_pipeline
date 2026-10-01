@@ -27,7 +27,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # prefix or a glob: in a bash `case` pattern `*` also matches `/` and `?`, and
 # an endpoint that only ended in /pulls/<N>/reviews once let any API call
 # through.
-review_endpoint='^repos/[^/?#]+/[^/?#]+/pulls/[0-9]+/reviews$'
+review_endpoint='^repos/(\{owner\}|[A-Za-z0-9_.-]+)/(\{repo\}|[A-Za-z0-9_.-]+)/pulls/[0-9]+/reviews$'
 
 # `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
 merge_flags_ok() {
@@ -47,15 +47,25 @@ merge_flags_ok() {
     [ "$squash$delete$sha" = 111 ]
 }
 
-# The review itself: `-f commit_id=<sha> -f event=<EVENT> -F body=@<file>`.
+# The review itself, each field exactly once: `-f commit_id=<sha>
+# -f event=<EVENT> -F body=@<file>.md`. `-F` reads whatever file it names and
+# a review body is public, so the body is a relative .md path that stays in
+# the checkout: never absolute, never `..` -- the token file is neither.
 review_fields_ok() {
+    local commit=0 event=0 body=0
     while [ $# -gt 0 ]; do
-        case "$1" in
-            -f|-F) [[ ${2:-} =~ ^(commit_id|event|body)= ]] || return 1; shift ;;
+        case "$1 ${2:-}" in
+            "-f commit_id="*) [[ $2 =~ ^commit_id=[0-9a-f]{1,40}$ ]] || return 1; commit=$((commit + 1)) ;;
+            "-f event="*) [[ $2 =~ ^event=(APPROVE|REQUEST_CHANGES|COMMENT)$ ]] || return 1; event=$((event + 1)) ;;
+            "-F body="*)
+                [[ $2 =~ ^body=@[A-Za-z0-9_.-][A-Za-z0-9_./-]*\.md$ ]] && [[ ! /${2#body=@}/ =~ /\.\./ ]] ||
+                    return 1
+                body=$((body + 1)) ;;
             *) return 1 ;;
         esac
-        shift
+        shift 2
     done
+    [ "$commit$event$body" = 111 ]
 }
 
 allowed=0
@@ -64,9 +74,12 @@ case "${1:-} ${2:-}" in
         # Read-only: who the token is. Bare, or with --jq.
         { [ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--jq" ]; }; } && allowed=1 ;;
     "api "*)
-        [[ ${2#/} =~ $review_endpoint ]] && review_fields_ok "${@:3}" && allowed=1 ;;
+        # No `.` or `..` segment: the owner and repo patterns admit dots.
+        if [[ ${2#/} =~ $review_endpoint ]] && [[ ! /${2#/}/ =~ /\.\.?/ ]]; then
+            review_fields_ok "${@:3}" && allowed=1
+        fi ;;
     "pr view")
-        [[ ${3:-} =~ ^[0-9]+$ ]] && allowed=1 ;;
+        [ $# -eq 3 ] && [[ $3 =~ ^[0-9]+$ ]] && allowed=1 ;;
     "pr merge")
         [[ ${3:-} =~ ^[0-9]+$ ]] && merge_flags_ok "${@:4}" && allowed=1 ;;
     "pr edit")
