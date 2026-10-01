@@ -248,3 +248,28 @@ waiting on a human (a playtest verdict, a release call) has to say so, or the
 planner plans past it. When the only next step is gated, the planner opens a
 single `pipeline:idle` issue naming the gate and stops asking until it is
 closed.
+
+---
+
+## Adopting
+
+What the first upgrade of an existing project (Hanse Merchant, 2026-09-30)
+taught. The recipe is `docs/ADOPTING.md` § *Bringing an older version up to
+date*.
+
+**An agent stops silently where nobody told it the rules.** The first
+implementer in Hanse Merchant had three commands refused in `dontAsk`. It
+stopped with no commit, no PR and no escalation, and the issue stayed claimed
+for hours. The prompts now say what that mode refuses and what to do after a
+refusal.
+
+**A template test must not read the project's settings.** Hanse Merchant set
+its companion suffixes as `ADOPTING.md` asks, and the template's own hook suite
+failed: one case tested the default instead of setting it.
+
+**"closed #N" closes.** A PR description that mentioned "closed #257" in prose
+bound a second issue. The allowlist check failed the PR as one closing two
+issues, and rightly so.
+
+**#N belongs to the directory you are in.** A review of the template's PR #35
+started in Hanse Merchant's checkout reviewed that repository's long-merged #35.
