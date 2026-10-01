@@ -22,9 +22,9 @@ Commit `864c235` — what the first live tick found.
   commit statuses, because a fine-grained token has no Checks permission and
   `statusCheckRollup`, check runs, and `gh pr checks` are unreadable to it on a
   private repository, which killed the first live tick on its third survey.
-- Scratch files now live in `.pipeline-tmp/` instead of `.claude/tmp/`, since
+- Scratch files moved from `.claude/tmp/` to `.pipeline-tmp/`, because
   `dontAsk` refuses every write under `.claude/` except `.claude/worktrees/`,
-  so an adopter's `.gitignore` has to follow.
+  whatever the allow rules say; an adopter's `.gitignore` has to follow.
 
 ### Fixed
 - The hook suite now clears the environment variables the hooks read, so it
