@@ -61,10 +61,51 @@ else
 fi
 [ -n "$cmd" ] || exit 0
 
+# A newline ends a command as `;` does, so a call on a later line is checked
+# like one on the first. Two exceptions: a backslash-newline continues the
+# line, and a heredoc body is treated as a mention: its lines are joined without
+# a separator, so no anchored check sees them as a command start (`bash <<EOF`
+# runs its body, and that gets past this, as quoting does). Pure bash, and only
+# for a command that spans lines: this runs before every Bash call. The pieces
+# are joined once at the end -- appending to one string is quadratic, and a long
+# heredoc would run the hook into its timeout, which skips the guard.
+nl='
+'
+lines="$cmd"
+case "$cmd" in
+    *"$nl"*)
+        # <<EOF, <<-EOF, <<'END-X', <<"EOF", <<\EOF; not a <<< here-string.
+        heredoc_start='(^|[^<])<<(-?)[[:space:]]*\\?['"'"'"]?([^[:space:];&|<>()'"'"'"\\]+)'
+        parts=() delim="" strip_tabs="" cont=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$delim" ]; then
+                end="$line"
+                [ -n "$strip_tabs" ] && end="${end#"${end%%[!	]*}"}"
+                [ "$end" = "$delim" ] && delim=""
+                parts+=(" $line")
+                continue
+            fi
+            if [ -n "$cont" ] || [ ${#parts[@]} -eq 0 ]; then
+                parts+=(" $line")
+            else
+                parts+=(" ; $line")
+            fi
+            cont=""
+            case "$line" in
+                *\\) last=$((${#parts[@]} - 1)); parts[last]="${parts[last]%\\}"; cont=1 ;;
+            esac
+            if [[ $line =~ $heredoc_start ]]; then
+                delim="${BASH_REMATCH[3]}" strip_tabs="${BASH_REMATCH[2]}"
+            fi
+        done <<< "$cmd"
+        saved_ifs="$IFS"; IFS=; lines="${parts[*]}"; IFS="$saved_ifs"
+        ;;
+esac
+
 # One spelling to match against: whitespace runs collapsed, gh's -R/--repo
 # option dropped wherever it sits (`gh -R o/r issue edit`), and git's -C <dir>
 # too (`git -C .claude/worktrees/review-5 push` is a `git push`).
-norm="$(printf '%s' "$cmd" | tr -s ' \t\n' '   ' \
+norm="$(printf '%s' "$lines" | tr -s ' \t\n' '   ' \
         | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
 
 refuse() {
@@ -175,37 +216,43 @@ holds (docs/Pipeline.md § Setup, step 4)."
 esac
 
 # Pushes: never rewrite or delete remote history; a subagent pushes only to an
-# agent/ branch.
-case "$norm" in
-    *"git push"*)
-        after="${norm#*git push}"
-        remote=""
-        for tok in $after; do
-            case "$tok" in
-                --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
-                    refuse "no force, delete or mirror pushes." \
+# agent/ branch. Every push in the command is checked, not only the first: an
+# allowed push must not carry a forbidden one behind a separator.
+rest="$norm"
+while :; do
+    case "$rest" in
+        *"git push"*) ;;
+        *) break ;;
+    esac
+    after="${rest#*git push}"
+    rest="$after"
+    remote=""
+    for tok in $after; do
+        case "$tok" in
+            --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
+                refuse "no force, delete or mirror pushes." \
 "History on GitHub is shared state; a rewritten or deleted branch loses other
 agents' and reviewers' work. Push new commits instead." ;;
-                -*|*">"*|*"<"*) continue ;;
-                "&&"|"||"|";"|"|") break ;;
-            esac
-            if [ -z "$remote" ]; then remote="$tok"; continue; fi
-            case "$tok" in
-                +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
+            -*|*">"*|*"<"*) continue ;;
+            "&&"|"||"|";"|"|") break ;;
+        esac
+        if [ -z "$remote" ]; then remote="$tok"; continue; fi
+        case "$tok" in
+            +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
 "Push new commits to your agent/ branch instead." ;;
-            esac
-            dest="${tok#*:}"
-            dest="${dest#refs/heads/}"
-            if [ "$subagent" = 1 ]; then
-                case "$dest" in
-                    agent/*) ;;
-                    *) refuse "an agent pushes only to its agent/<N>- branch." \
+        esac
+        dest="${tok#*:}"
+        dest="${dest#refs/heads/}"
+        if [ "$subagent" = 1 ]; then
+            case "$dest" in
+                agent/*) ;;
+                *) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-                esac
-            fi
-        done ;;
-esac
+            esac
+        fi
+    done
+done
 
 labels_something=0
 case "$norm" in

@@ -405,6 +405,57 @@ expect_eq "bash guard: git -C force push"                       2 "$(bguard "git
 expect_eq "bash guard: git -C push onto main"                   2 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:main" github-pr-reviewer)"
 expect_eq "bash guard: reviewer pushes from its worktree"       0 "$(bguard "git -C .claude/worktrees/review-5 push origin HEAD:agent/5-x" github-pr-reviewer)"
 expect_eq "bash guard: triage may not push via git -C"          2 "$(bguard "git -C x push origin agent/5-x" github-triage triage)"
+# A newline separates commands, as `;` does (#36); a heredoc body is a mention.
+expect_eq "bash guard: gh-reviewer on a later line"             2 "$(bguard "cd x
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: setup-repo on a later line"              2 "$(bguard "cd x
+.claude/bin/pipeline setup-repo" "")"
+expect_eq "bash guard: a push, then another command"            0 "$(bguard "git push origin agent/1-x
+ls" github-issue-resolver implementer)"
+expect_eq "bash guard: a heredoc that names gh-reviewer"        0 "$(bguard "cat > f <<EOF
+.claude/bin/gh-reviewer api user
+EOF" github-issue-resolver implementer)"
+expect_eq "bash guard: a call after a heredoc ends"             2 "$(bguard "cat > f <<'EOF'
+text
+EOF
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a <<- heredoc ends at a tabbed delimiter" 2 "$(bguard "cat > f <<-EOF
+	text
+	EOF
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a <<\\EOF heredoc is a mention"           0 "$(bguard "cat > f <<\\EOF
+.claude/bin/gh-reviewer api user
+EOF" github-issue-resolver implementer)"
+expect_eq "bash guard: a quoted delimiter with a dash ends"     2 "$(bguard "cat > f <<'END-X'
+text
+END-X
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+# The 500 KB command goes to jq on stdin, not as an argument: Linux caps one
+# argument at 128 KiB and Windows a whole command line at 32K characters.
+long_body="$(i=0; while [ $i -lt 20000 ]; do echo "line $i of a long heredoc"; i=$((i + 1)); done)"
+long_payload="$WORK/long-payload.json"
+printf 'cat > f <<EOF\n%s\nEOF\n.claude/bin/gh-reviewer api user' "$long_body" \
+    | jq -Rs '{tool_input: {command: .}, agent_type: "github-issue-resolver"}' > "$long_payload"
+expect_eq "bash guard: the long payload was built"              yes \
+    "$([ "$(wc -c < "$long_payload")" -gt 400000 ] && echo yes || echo no)"
+long_start=$SECONDS
+expect_eq "bash guard: a call after a 20000-line heredoc"       2 \
+    "$("$BASH" "$HOOKS/bash_guard.sh" implementer < "$long_payload" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: a 20000-line heredoc well inside the hook timeout" yes \
+    "$([ $((SECONDS - long_start)) -lt 5 ] && echo yes || echo no)"
+expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
+.claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
+expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\
+agent/1-x" github-issue-resolver implementer)"
+expect_eq "bash guard: a continued push onto main"              2 "$(bguard "git push origin \\
+main" github-issue-resolver implementer)"
+expect_eq "bash guard: a second push to main, on a later line"  2 "$(bguard "git push origin agent/1-x
+git push origin main" github-issue-resolver implementer)"
+expect_eq "bash guard: a second push, forced, after ;"          2 "$(bguard "git push origin agent/1-x; git push --force origin agent/1-x" github-issue-resolver implementer)"
+expect_eq "bash guard: the owner's second push deletes main"    2 "$(bguard "git push origin agent/1-x && git push --delete origin main" "")"
+expect_eq "bash guard: two pushes to agent/ branches"           0 "$(bguard "git push origin agent/1-x && git push origin agent/2-y" github-issue-resolver implementer)"
+expect_eq "bash guard: a push to main on a later line"          2 "$(bguard "ls
+git push origin main" github-issue-resolver implementer)"
 
 # --- lib/pr_allowlist.sh: the `allowlist` required check ------------------------
 
