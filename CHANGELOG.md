@@ -12,20 +12,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Commit `cb7111d` — a done-check the reviewer cannot run goes to the owner.
 
+### Added
+- The review skill's § 3 table now has a row for a command and what it must
+  print, judged by its output rather than its exit code.
+
 ### Changed
 - A done-check the reviewer cannot run because `dontAsk` refuses it is no
   longer treated like a missing tool to name while approving the rest: unless
   CI covers the line, the verdict is now NEEDS_HUMAN naming the command, since
   CI does not run a grep-style check and the line would otherwise merge
   unchecked under an approval that reads as if it had been checked.
+- The review skill's § 3 now says such a line is neither a hand-back nor a
+  missing tool and leaves it to § 0, so it cannot end in REQUEST_CHANGES and
+  fix passes that cannot fix anything.
 - `docs/AgentEnvironment.md` § Permissions now says the same for the reviewer.
-
-### Fixed
-- The review skill's § 3 now hands a refused done-check to § 0, because the
-  rule was unreachable: the line fell under § 3's general hand-back rule and
-  ended in REQUEST_CHANGES and fix passes that cannot fix anything.
-- The review skill's § 3 table now has a row for a command and what it must
-  print, judged by its output rather than its exit code.
 
 ## [Wave 8] - 2026-10-01
 
@@ -37,9 +37,9 @@ Commit `4b28cde` — a done-check may be a command and what it must print.
   exits 0, or a command and what it must print, because an absence written as
   `grep -c '<text>' <file>` prints `0` with exit 1 and a reader of the old
   contract would have failed a correct absence.
-- `github-issue-create` § 4 no longer offers `git grep -n` next to the absence
-  rule, since it prints nothing for an absence rather than `0`; an absence is
-  always `grep -c`.
+- `github-issue-create` § 4 now offers `git grep -n` only for a presence,
+  since it prints nothing for an absence rather than `0`; an absence is always
+  `grep -c`.
 
 ## [Wave 7] - 2026-10-01
 
@@ -58,14 +58,16 @@ Commit `d3691d4` — tell agents what dontAsk refuses, and never to stop silentl
   rule, each with what a refusal means for its own job: the implementer
   commits, pushes and escalates naming the command, triage rewrites the line or
   hands the issue to the owner, and the reviewer treats it like a missing tool.
-- `settings.json` now allows `grep` and `git grep`, so those checks no longer
-  depend on Claude Code's own read-only list, and `test_settings.py` holds the
-  plain forms the prompts recommend.
+- `.claude/settings.json` now allows `grep` and `git grep`, so those checks no
+  longer depend on Claude Code's own read-only list, and
+  `.claude/pipeline/tests/test_settings.py` holds the plain forms the prompts
+  recommend.
 
 ### Fixed
-- An implementer whose done-checks `dontAsk` refused, in the first full run of
-  a downstream project, stopped with no commit, no PR and no escalation and
-  left the issue claimed for hours; no prompt had said what that mode refuses.
+- An implementer whose done-checks `dontAsk` refuses no longer stops silently:
+  in the first full run of a downstream project one stopped with no commit, no
+  PR and no escalation and left the issue claimed for hours, because no prompt
+  had said what that mode refuses.
 
 ## [Wave 6] - 2026-09-29
 
