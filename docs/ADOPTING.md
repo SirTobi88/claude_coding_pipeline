@@ -124,30 +124,34 @@ before `config.json` existed (Hanse Merchant, upgraded on 2026-09-30 and kept
 in step twice since). Whatever the template owns is copied; whatever the project
 owns is merged.
 
-1. **Copy every file the template owns, verbatim:** `.claude/agents`,
+1. **A project rule that lived inside an old prompt or skill is lost by step 2.**
+   Move it to § *Project rules* first.
+2. **Copy every file the template owns, verbatim:** `.claude/agents`,
    `.claude/commands`, `.claude/bin`, `.claude/hooks`, `.claude/pipeline`
    (`pipeline.py`, its tests, `config.json`) and `.claude/skills`; the
    `pr-contract`, `issue-lint` and `portability` workflows; the PR template and
-   the agent-task issue template; `docs/Pipeline.md`, `docs/LESSONS.md` and
-   `docs/ADOPTING.md`. Then set the project's values again: `config.json`, and
-   `SCOPE_COMPANION_SUFFIXES` in `.claude/hooks/lib/issue_scope.sh`.
-2. **Merge by hand only what the project owns:** `CLAUDE.md`;
+   the issue templates (`.github/ISSUE_TEMPLATE/`); `docs/Pipeline.md`,
+   `docs/LESSONS.md` and `docs/ADOPTING.md`. Then set the project's values
+   again: `config.json`, `SCOPE_COMPANION_SUFFIXES` in
+   `.claude/hooks/lib/issue_scope.sh`, and — if the project's `test_command`
+   differs — `USED` in `.claude/pipeline/tests/test_settings.py` (§ *C*).
+3. **Merge by hand only what the project owns:** `CLAUDE.md`;
    `CONTRIBUTING-agents.md` (the template's text, with the project's rules in
    § *Project rules*); `docs/AgentEnvironment.md` (the project's machine facts
    plus the template's new sections); `.claude/settings.json` (the template's
    rules plus the project's own keys, and none of an old version's wide allow
    rules); `ci.yml` (jobs `ci` and `tooling`); `.gitignore`; `.gitattributes`.
-3. **A project rule that lived inside an old prompt or skill is lost by step 1.**
-   Move it to § *Project rules* first.
 4. **Check that the copies are exact by git content, not by bytes on disk.**
    Compare `git hash-object <file>` in both checkouts: a Windows checkout may
    hold CRLF, and `git hash-object` applies the repository's line-ending
    settings where a byte comparison does not. Only the files the project sets
-   (step 1) may differ.
+   (step 2) may differ.
 5. **Commit in three steps** (verbatim, fitted, merged) in one pull request, not
-   a stack, so the review can go commit by commit.
-6. **Afterwards:** `setup-repo`, an agents' token for this repository, `doctor`
-   in the tick's environment, and one tick by hand
+   a stack, so the review can go commit by commit. If the upgrade changes how a
+   required check is triggered, drop those checks for this pull request first,
+   as above.
+6. **Afterwards:** `setup-repo` with your own login, an agents' token for this
+   repository, `doctor` in the tick's environment, and one tick by hand
    (`docs/AgentEnvironment.md` § *A tick by hand*).
 
 ---
