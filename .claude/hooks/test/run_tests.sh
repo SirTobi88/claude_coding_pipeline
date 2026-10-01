@@ -194,7 +194,10 @@ b="$(_scope_cache_path 12 https://github.com/o/tool_x.git)"
 LIST="$WORK/list"
 scope_fetch_allowlist 228 > "$LIST"
 allowed() { scope_path_allowed "$1" "$LIST" && echo yes || echo no; }
-expect_eq "no companions by default"      no  "$(allowed src/sim/town_market.gd.uid)"
+# Empty means none. Set here, not read from issue_scope.sh, where a project
+# sets its own (docs/ADOPTING.md § C).
+SCOPE_COMPANION_SUFFIXES=""
+expect_eq "no companions when none are set" no "$(allowed src/sim/town_market.gd.uid)"
 # The companion cases below use the Godot setting from issue_scope.sh's header.
 SCOPE_COMPANION_SUFFIXES=".uid .import"
 expect_eq "exact file"                    yes "$(allowed src/sim/town_market.gd)"
