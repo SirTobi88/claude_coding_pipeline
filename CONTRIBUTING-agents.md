@@ -47,10 +47,13 @@ escalation — and `.claude/hooks/bash_guard.sh` refuses an implementer's
 `agent/<N>-` branch both take the issue from the branch name, never from the PR
 body.
 
-## Definition of done means a command that exits 0
+## Definition of done means a command that can be run
 
 An issue is done when something can be *run* that proves it, not when the code
-looks right.
+looks right. Each line is one plain command (`docs/AgentEnvironment.md`
+§ Permissions) that exits 0, or a plain command and what it must print. An
+absence is `grep -c '<text>' <file>` prints `0`, judged by its output, since
+`grep -c` exits 1 when it counts nothing.
 
 - The project's test command (`test_command` in `.claude/pipeline/config.json`)
   passes, including the new test the issue names.

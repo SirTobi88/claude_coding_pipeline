@@ -71,7 +71,9 @@ with `/` (`.github` without it reads as a file). Backtick a path with spaces.
 
 ## Definition of done
 
-<!-- Every line must be checkable by running something. "Works correctly" is
+<!-- Every line must be checkable by running something: one plain command
+that exits 0, or a command and what it must print (an absence:
+`grep -c 'old text' path/to/file` prints `0`). "Works correctly" is
 not a definition of done. If a line cannot be a command, the harness it needs
 does not exist yet -- file that first. -->
 
