@@ -45,9 +45,11 @@ payload="$(cat)"
 
 if command -v jq >/dev/null 2>&1; then
     # One jq call, as this runs before every Bash command: the agent type on
-    # the first line, then the command, which may span lines.
+    # the first line, then the command, which may span lines. The agent type
+    # is kept to one line, or its tail would be read as part of the command.
     fields="$(printf '%s' "$payload" \
-              | jq -r '"\(.agent_type // "")\n\(.tool_input.command // "")"' 2>/dev/null | tr -d '\r')"
+              | jq -r '"\(.agent_type // "" | tostring | split("\n") | join(" "))\n\(.tool_input.command // "")"' \
+                2>/dev/null | tr -d '\r')"
     agent="${fields%%"
 "*}"
     cmd="${fields#"$agent"}"
