@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # `gh`, acting as the reviewer bot account instead of the owner.
 #
-#   .claude/bin/gh-reviewer pr review 123 --approve --body-file .pipeline-tmp/review-123.md
+#   .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/123/reviews" -f commit_id=<sha> \
+#     -f event=APPROVE -F body=@.pipeline-tmp/review-123.md
 #
 # Branch protection requires one approving review from someone who is not the
 # PR's author. Every implementer pushes as the owner's account, so the only
@@ -22,20 +23,62 @@
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Each call is matched whole -- command, target and every flag -- never by a
+# prefix or a glob: in a bash `case` pattern `*` also matches `/` and `?`, and
+# an endpoint that only ended in /pulls/<N>/reviews once let any API call
+# through.
+review_endpoint='^repos/[^/?#]+/[^/?#]+/pulls/[0-9]+/reviews$'
+
+# `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
+merge_flags_ok() {
+    local squash=0 delete=0 sha=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --auto) ;;
+            --squash) squash=1 ;;
+            --delete-branch) delete=1 ;;
+            --match-head-commit)
+                [[ ${2:-} =~ ^[0-9a-f]+$ ]] || return 1
+                sha=1; shift ;;
+            *) return 1 ;;
+        esac
+        shift
+    done
+    [ "$squash$delete$sha" = 111 ]
+}
+
+# The review itself: `-f commit_id=<sha> -f event=<EVENT> -F body=@<file>`.
+review_fields_ok() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|-F) [[ ${2:-} =~ ^(commit_id|event|body)= ]] || return 1; shift ;;
+            *) return 1 ;;
+        esac
+        shift
+    done
+}
+
 allowed=0
 case "${1:-} ${2:-}" in
-    "pr review"|"pr merge"|"pr edit"|"pr view"|"pr checks"|"pr comment") allowed=1 ;;
-    "api user") allowed=1 ;;
+    "api user")
+        # Read-only: who the token is. Bare, or with --jq.
+        { [ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--jq" ]; }; } && allowed=1 ;;
     "api "*)
-        # Submitting a review, pinned to a commit. The endpoint must come first.
-        case "${2#/}" in
-            repos/*/pulls/[0-9]*/reviews|repos/*/pulls/[0-9]*/reviews\?*) allowed=1 ;;
-        esac ;;
+        [[ ${2#/} =~ $review_endpoint ]] && review_fields_ok "${@:3}" && allowed=1 ;;
+    "pr view")
+        [[ ${3:-} =~ ^[0-9]+$ ]] && allowed=1 ;;
+    "pr merge")
+        [[ ${3:-} =~ ^[0-9]+$ ]] && merge_flags_ok "${@:4}" && allowed=1 ;;
+    "pr edit")
+        [[ ${3:-} =~ ^[0-9]+$ ]] && [ $# -eq 5 ] && [ "$4" = "--add-label" ] &&
+            case "$5" in spec-defect|status:needs-human) true ;; *) false ;; esac && allowed=1 ;;
 esac
 if [ "$allowed" = 0 ]; then
     echo "gh-reviewer: refusing 'gh ${1:-} ${2:-} ...' as the reviewer bot." >&2
-    echo "It runs only: pr review|merge|edit|view|checks|comment, api user," >&2
-    echo "and api repos/<owner>/<repo>/pulls/<N>/reviews. Use plain gh for anything else." >&2
+    echo "It runs only the review's own calls: api user [--jq …];" >&2
+    echo "api repos/<owner>/<repo>/pulls/<N>/reviews -f commit_id=… -f event=… -F body=@…;" >&2
+    echo "pr view <N>; pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>;" >&2
+    echo "pr edit <N> --add-label spec-defect|status:needs-human. Use plain gh for anything else." >&2
     exit 4
 fi
 
