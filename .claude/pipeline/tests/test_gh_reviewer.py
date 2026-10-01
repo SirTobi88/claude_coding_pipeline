@@ -9,16 +9,21 @@ reached the stub -- that is, it would have run as the bot.
 """
 
 import os
-import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pipeline as p  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = ROOT / ".claude" / "bin" / "gh-reviewer"
-BASH = shutil.which("bash")
+# Not PATH's bash: on Windows that can be WSL's, which cannot read this checkout.
+BASH = p.bash_path()
 
 # Calls the review skill makes (.claude/skills/github-pr-review/SKILL.md).
 ALLOWED = [
