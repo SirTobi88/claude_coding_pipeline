@@ -121,12 +121,14 @@ Go through the issue's DoD line by line and put each in one bucket:
 | The test command passes; a named test exists; a golden file is unchanged | CI (§ 2). Confirm the **named** test really exists in the diff and ran (`gh run view <run-id> --log \| grep <test_name>`). A test the DoD names but the diff lacks is a failed line even when CI is green. |
 | `git diff --name-only` matches Files in scope | the `allowlist` check |
 | A named number — a timing, a size, a threshold | reproduce it with the command the DoD names, in the worktree, and compare against the claim, not just that a number exists |
+| A command and what it must print (`grep -c '<text>' <file>` prints `0`) | run it in the worktree and compare its output with the line, not its exit code |
 | A screenshot or recording | look at it in the PR; judge it against what the line asks |
 
 A line the PR claims as verified that you cannot reproduce — and CI does not
 cover — is a hand-back (§ 8d): *"asserts a DoD item it did not verify"*. A line
 you cannot reproduce only because this machine lacks a tool is **not** the
-author's fault: say so in the verdict and judge the rest.
+author's fault: say so in the verdict and judge the rest. A done-check refused
+under `dontAsk` is neither of these: § 0 decides it.
 
 ## 4. The project's own rules
 
