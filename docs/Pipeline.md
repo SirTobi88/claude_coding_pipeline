@@ -301,6 +301,7 @@ an hour for its review.
 | What | How | What stops |
 |---|---|---|
 | **Hold** | automatic, while branch protection on the default branch is missing or differs from what `setup-repo` sets (`require_protection`, default true) | everything the pause stops; the fix is `setup-repo` in a terminal |
+| **Hold** | automatic, when `run --apply` does not run in the tick's environment: `PIPELINE_TICK` is not `1`, or the active gh login is not a fine-grained (`github_pat_…`) token (`require_tick_environment`, default true). A dry run only reports it under `setup_problems`; `doctor` shows it as *tick environment* | everything the pause stops; the fix is to start the tick as § Setup, step 5 says |
 | **Pause** | `pipeline:pause` on any open issue — or, where no agent can reach it, the file `pipeline/pause` in the git directory (`touch "$(git rev-parse --git-common-dir)/pipeline/pause"`) | new agents, bookkeeping, and auto-merge: the tick turns it off on every open PR, and turns it back on for approved PRs once unpaused. *Needs you* is still reported |
 | **Stop** | quit the Claude app, or end the `claude` processes | the agents already running — a pause does not reach them |
 
@@ -427,6 +428,14 @@ names is refused instead, and the agent carries on or escalates.
   for the ones before it. Use it only while you watch.
 - Not `bypassPermissions`: it switches the allow list off, and only the hooks
   remain (§ Merging).
+
+A tick started any other way holds (§ *Holding, pausing, stopping*): without
+`PIPELINE_TICK=1`, or with a gh login that is not the agents' fine-grained
+token, `run --apply` dispatches nothing and says why under *Needs you*. To run
+the tick on your own login on purpose, set `require_tick_environment` to
+`false` in `.claude/pipeline/config.json`. The reasons are then still reported
+under `setup_problems` and by `doctor`, but nothing holds — and the agents
+hold every right your login has, which step 2 exists to prevent.
 
 Run `.claude/bin/pipeline doctor` first, then one tick by hand in that mode. A
 refused command shows in the report.

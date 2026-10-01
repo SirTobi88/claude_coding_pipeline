@@ -66,6 +66,12 @@ DEFAULT_CONFIG = {
     # all work while protection is missing or has drifted. Turn off only to try
     # the pipeline out on a repository that cannot have protection.
     "require_protection": True,
+    # A tick that runs with the owner's full login, or without PIPELINE_TICK,
+    # hands its agents rights the setup takes away (docs/Pipeline.md § Setup,
+    # steps 2 and 5), so `run --apply` holds outside the tick's environment.
+    # Turn off only to run the tick on the owner's own login on purpose: the
+    # reasons are still reported, but nothing holds.
+    "require_tick_environment": True,
     "limits": {
         "max_parallel_implement": 3,
         "max_parallel_review": 2,
@@ -713,6 +719,18 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         plan.setup_problems.append(
             "cannot read branch protection (the agents' token needs Administration: read) -- "
             "the tick cannot tell whether the gate is on")
+    tick_env = list(snap.get("tick_env") or [])
+    if tick_env and snap.get("require_tick_environment", True):
+        # The agents would run with rights the setup takes away from them.
+        why = "; ".join(tick_env)
+        pause_why = pause_why or f"not the tick's environment: {why}"
+        plan.awaiting_human.append(
+            f"this tick did not run in the tick's environment: {why} -- start it with the agents' "
+            "token and PIPELINE_TICK=1 (docs/Pipeline.md § Setup, step 5), or set "
+            "require_tick_environment false to run it on your own login on purpose")
+    elif tick_env:
+        plan.setup_problems.append(
+            "not the tick's environment (require_tick_environment is off): " + "; ".join(tick_env))
     if not reviewer:
         plan.setup_problems.append(
             f"reviewer bot login unknown: no token at {CONFIG['reviewer_token_file']} "
@@ -1746,6 +1764,44 @@ def remote_agent_branches() -> set[str] | None:
     return out
 
 
+def active_token_kind(auth_status: str) -> str | None:
+    """The kind of token gh uses now -- `github_pat_`, `gho_`, `ghp_`, ... --
+    from `gh auth status`, never the token itself. gh 2.40+ lists every
+    account; the one marked active counts (a GH_TOKEN login is listed first
+    and active, the owner's keyring login after it, inactive)."""
+    blocks = re.split(r"\n(?=\s*[✓X✗]\s)", auth_status)
+    active = [b for b in blocks if re.search(r"Active account:\s*true", b)]
+    for block in active or blocks:
+        m = re.search(r"Token:\s*(github_pat_|gh[a-z]_)", block)
+        if m:
+            return m.group(1)
+    return None
+
+
+def tick_environment(env=os.environ, run=subprocess.run, gh: str = "gh") -> list[str]:
+    """Why this process is not the tick's environment: empty when it is.
+    PIPELINE_TICK must be "1"; `gh auth status` must name a fine-grained
+    (github_pat_) token. Never prints a token."""
+    reasons = []
+    if env.get("PIPELINE_TICK") != "1":
+        reasons.append("PIPELINE_TICK is not set to 1, so the bash guard treats this session as "
+                       "the owner's and lets it act as the reviewer bot")
+    try:
+        auth = run([gh, "auth", "status"], capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        reasons.append("gh cannot be started, so the login cannot be checked")
+        return reasons
+    if auth.returncode != 0:
+        reasons.append("gh is not logged in")
+    else:
+        kind = active_token_kind((auth.stdout or "") + "\n" + (auth.stderr or ""))
+        if kind != "github_pat_":
+            what = f"a {kind}… token" if kind else "a login of unknown kind"
+            reasons.append(f"the gh login is {what}, not the agents' fine-grained token "
+                           "(github_pat_…): the agents would hold its full rights")
+    return reasons
+
+
 def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
               bash=bash_path) -> list[str]:
     """What is wrong with the machine and checkout the tick runs from.
@@ -1979,6 +2035,13 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
         add("warn", "gh login", "not a fine-grained token: if the tick runs with this login, the "
                                 "agents hold its full rights (docs/Pipeline.md § Setup, step 2)")
 
+    reasons = tick_environment(run=run, gh=gh.gh)
+    held = bool(CONFIG.get("require_tick_environment", True))
+    add("warn" if reasons else "ok", "tick environment",
+        ("; ".join(reasons) + (" -- a tick run here holds" if held else
+                               " -- require_tick_environment is off, so a tick run here does not hold"))
+        if reasons else "PIPELINE_TICK=1 and a fine-grained token")
+
     login = gh.reviewer_login()
     add("ok" if login else "fail", "reviewer bot",
         f"token works, login {login}" if login else f"no working token at {reviewer_token_path()}")
@@ -2210,13 +2273,23 @@ def cmd_run(args) -> int:
         "owner_login": gh.owner_login(),
         "protection": gh.protection_state(),
         "require_protection": bool(CONFIG.get("require_protection", True)),
+        "require_tick_environment": bool(CONFIG.get("require_tick_environment", True)),
         "runs_today": runs_in(read_tick_log(log_dir, now - timedelta(hours=24))),
     }
+    # Only a tick that acts holds outside its environment: the owner reads a
+    # dry run from their own shell to see what a tick would do.
+    tick_env = tick_environment(gh=gh.gh)
+    if args.apply:
+        snap["tick_env"] = tick_env
     allowlist_fn = cached_allowlist()
     lint_fn = make_lint_fn(gh, {i["number"] for i in issues}, allowlist_fn)
     plan = decide(snap, allowlist_fn, lint_fn)
     out = plan.to_json()
     out["setup_problems"] = out["setup_problems"] + synced + preflight() + CONFIG_WARNINGS
+    if not args.apply and tick_env:
+        held = "would" if snap["require_tick_environment"] else "would not (require_tick_environment is off)"
+        out["setup_problems"].append(f"not the tick's environment (a tick run like this {held} hold): "
+                                     + "; ".join(tick_env))
     if args.apply:
         # Paused or not: the status issue needs its label too.
         made = gh.ensure_labels()

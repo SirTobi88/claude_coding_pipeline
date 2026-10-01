@@ -231,6 +231,14 @@ owner's terminal and failed inside a tick: one case assumed `PIPELINE_TICK` was
 unset, and the implementer's shell had it set. The suite now clears every
 variable the hooks read before its first case.
 
+**A setup nothing checks is a setup nobody has.** Bringing the pipeline into
+another project, the tick's environment went wrong twice. The token path was a
+folder, so `GH_TOKEN` stayed empty and `gh` fell back to the owner's keyring
+login. A desktop scheduled task ran every tick with neither the token nor
+`PIPELINE_TICK`. Each time the agents held the owner's full rights, and only a
+manual look caught it. `run --apply` now holds outside the tick's environment
+(`require_tick_environment`), and `doctor` shows it as *tick environment*.
+
 ---
 
 ## The planner
