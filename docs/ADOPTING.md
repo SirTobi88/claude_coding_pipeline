@@ -128,7 +128,7 @@ nothing fails.
 - [ ] `tooling` job is green (hook and pipeline tests).
 - [ ] `.claude/bin/gh-reviewer api user --jq .login` prints the bot.
 - [ ] In the tick's environment, `gh auth status` names a fine-grained
-      (`github_pat_…`) token.
+      (`github_pat_…`) token and nothing else.
 - [ ] `.claude/bin/pipeline run` (dry run) prints JSON with no `setup_problems`.
 - [ ] Open a test issue labelled `idea` ("add a CHANGELOG.md") and run
       `/pipeline-tick` a few times: planner → issue → lint `status:ready` →
