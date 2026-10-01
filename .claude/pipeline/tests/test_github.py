@@ -406,6 +406,46 @@ class IssueStateTests(unittest.TestCase):
         gh = FakeGh(responses=[(lambda a: a[0] == "api", p.GhError("HTTP 404: Not Found"))])
         self.assertIsNone(gh.issue_state(3))
 
+    def test_a_server_error_is_unknown_whatever_the_issue_number(self):
+        # Through the real Gh._run, whose message names the request path
+        # (repos/{owner}/{repo}/issues/404): the status must come from gh's
+        # stderr, not from that message.
+        gh = p.Gh.__new__(p.Gh)
+        gh.gh, gh.dry_run, gh.log = "gh", False, []
+        orig = p.subprocess.run
+        try:
+            p.subprocess.run = lambda *a, **k: SimpleNamespace(
+                returncode=1, stdout="", stderr="gh: Server Error (HTTP 502)\n")
+            self.assertEqual(gh.issue_state(404), "unknown")
+            self.assertEqual(gh.issue_state(1410), "unknown")
+            self.assertEqual(gh.issue_state(4046), "unknown")
+            p.subprocess.run = lambda *a, **k: SimpleNamespace(
+                returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n")
+            self.assertIsNone(gh.issue_state(12))
+        finally:
+            p.subprocess.run = orig
+
+
+class GhErrorTests(unittest.TestCase):
+    def test_the_status_comes_from_stderr_not_the_message(self):
+        e = p.GhError("gh api repos/o/r/issues/404 ...: boom", stderr="gh: Server Error (HTTP 502)")
+        self.assertEqual(e.http_status, 502)
+        self.assertEqual(p.GhError("x", stderr="HTTP 410: Gone").http_status, 410)
+        self.assertIsNone(p.GhError("gh api repos/o/r/issues/404 ...", stderr="timeout").http_status)
+
+    def test_stderr_defaults_to_the_message(self):
+        self.assertEqual(p.GhError("HTTP 404: Not Found").http_status, 404)
+        self.assertEqual(p.GhError("plain").stderr, "plain")
+
+    def test_protection_and_automerge_read_stderr(self):
+        gh = FakeGh(responses=[(lambda a: a[0] == "api",
+                                p.GhError("gh api repos/o/r/branches/main/protection ...: x",
+                                          stderr="gh: Server Error (HTTP 502)"))])
+        self.assertEqual(gh.protection_state()["state"], "unreadable")
+        gh = FakeGh(responses=[(lambda a: a[0] == "api",
+                                p.GhError("x", stderr="gh: Branch not protected (HTTP 404)"))])
+        self.assertEqual(gh.protection_state()["state"], "missing")
+
 
 class BashPathTests(unittest.TestCase):
     def test_an_override_wins(self):

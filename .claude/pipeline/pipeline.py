@@ -1299,7 +1299,20 @@ def _safe_scope(allowlist_fn, body: str) -> list[str]:
 # --- GitHub ------------------------------------------------------------------
 
 class GhError(RuntimeError):
-    pass
+    """A failed gh call. The message is for a person and names the request;
+    callers that decide on the failure read `stderr` and `http_status`,
+    never the message: an issue numbered 404 put "404" in every message
+    about it."""
+
+    def __init__(self, message: str, stderr: str | None = None):
+        super().__init__(message)
+        self.stderr = message if stderr is None else stderr
+
+    @property
+    def http_status(self) -> int | None:
+        """From gh's "(HTTP 404)" or "HTTP 404:" in stderr."""
+        m = re.search(r"\(HTTP (\d{3})\)|\bHTTP (\d{3}):", self.stderr)
+        return int(m.group(1) or m.group(2)) if m else None
 
 
 class StaleState(GhError):
@@ -1348,7 +1361,8 @@ class Gh:
         proc = subprocess.run([self.gh, *args], input=input, capture_output=True, text=True,
                               encoding="utf-8", env=env)
         if check and proc.returncode != 0:
-            raise GhError(f"gh {' '.join(args[:3])} ...: {proc.stderr.strip()[:400]}")
+            raise GhError(f"gh {' '.join(args[:3])} ...: {proc.stderr.strip()[:400]}",
+                          stderr=proc.stderr)
         return proc.stdout
 
     def json(self, args: list[str], as_reviewer: bool = False):
@@ -1398,8 +1412,7 @@ class Gh:
             data = self.json(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
             return (data or {}).get("state")
         except GhError as e:
-            text = str(e)
-            if "404" in text or "410" in text or "Not Found" in text:
+            if e.http_status in (404, 410):
                 return None
             return "unknown"
 
@@ -1566,10 +1579,9 @@ class Gh:
         try:
             actual = self.json(["api", f"repos/{{owner}}/{{repo}}/branches/{DEFAULT_BRANCH}/protection"])
         except GhError as e:
-            text = str(e)
-            if "404" in text or "not protected" in text.lower():
+            if e.http_status == 404 or "not protected" in e.stderr.lower():
                 return {"state": "missing", "problems": ["no branch protection"]}
-            return {"state": "unreadable", "problems": [text[:200]]}
+            return {"state": "unreadable", "problems": [str(e)[:200]]}
         drift = protection_drift(actual, protection_payload(actions_app_id(self)))
         return {"state": "drift" if drift else "ok", "problems": drift}
 
@@ -1638,7 +1650,7 @@ class Gh:
             self._run(args[:3] + ["--auto"] + args[3:], as_reviewer=True, mutating=True)
         except GhError as e:
             # GitHub refuses auto-merge on a pull request that could merge now.
-            if "clean status" not in str(e):
+            if "clean status" not in e.stderr:
                 raise
             self._run(args, as_reviewer=True, mutating=True)
 
