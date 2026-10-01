@@ -42,8 +42,8 @@ flowchart LR
 1. **Every state has a next owner.** GitHub labels are the state machine
    (`status:ready`, `status:in-progress`, `status:in-review`,
    `status:escalated`, `status:needs-human`, …). A deterministic script decides
-   what each state needs; agents only make judgement calls. Nothing is inferred
-   from branch names or local worktrees.
+   what each state needs; agents only make judgement calls. There is no local
+   state file and no worktree scan: any machine sees what the pipeline sees.
 2. **The platform enforces the rules, not the agents' good behaviour.** Branch
    protection requires the checks and one approval from someone other than the
    author. Every agent pushes as the owner, so only the reviewer bot's approval
@@ -70,10 +70,25 @@ flowchart LR
 
 The tick's *Needs you* list, nothing else: design contradictions, second
 escalations after triage, PRs that used all their fix or conflict passes,
-reviews that never reach a verdict, CI that never finishes, `human-decision` and
-`asset` issues, anything touching the pipeline's own files, PRs from forks or
-bound to no issue, a red default branch, and roadmap steps marked as human
-gates. The kill switch is one label: `pipeline:pause` on any open issue.
+reviews that never reach a verdict, CI that never finishes, approvals that
+never merge, `human-decision` and `asset` issues, anything touching the
+pipeline's own files, PRs from forks, bound to no issue or aimed at a branch
+other than the default, a red default branch, missing or drifted branch
+protection (the tick then holds everything), and roadmap steps marked as human
+gates. Hand-offs mention you, posted as the reviewer bot where possible, so
+GitHub notifies you.
+
+**Answering.** Answer in a comment, then add the `human:answered` label. Do not
+just remove `status:needs-human`: the label is how the tick knows you answered
+(`docs/Pipeline.md` § *Answering*).
+
+**Watching.** Every tick rewrites one issue labelled `pipeline:status`: when it
+ran, *Needs you*, what it dispatched, and seven days of counts. Pin it; if its
+time is old, no tick is running.
+
+**Stopping.** The kill switch is one label: `pipeline:pause` on any open issue.
+The tick then starts nothing and turns off auto-merge on every open PR; agents
+already running finish (`docs/Pipeline.md` § *Holding, pausing, stopping*).
 
 ---
 
@@ -85,10 +100,16 @@ gates. The kill switch is one label: `pipeline:pause` on any open issue.
    the `ci` job, *Project rules* in `CONTRIBUTING-agents.md`, `CLAUDE.md`,
    `docs/ROADMAP.md` (`docs/ADOPTING.md` § C).
 3. **Set up once** — tools, a restricted token for the agents, a reviewer bot
-   account and token, then `.claude/bin/pipeline setup-repo`
-   (`docs/Pipeline.md` § *Setup*).
-4. **Run a tick** — `/pipeline-tick` by hand in `dontAsk` mode, then schedule
-   it (a fresh `claude -p` session per tick, or a desktop app scheduled task).
+   account and token (`docs/Pipeline.md` § *Setup*). Commit the adoption
+   first, then run `.claude/bin/pipeline setup-repo` in a terminal with your
+   own login: afterwards the default branch accepts only reviewed pull
+   requests.
+4. **Check, then run a tick** — `.claude/bin/pipeline doctor`, then
+   `/pipeline-tick` by hand in `dontAsk` mode. Schedule a fresh session per
+   tick from the OS scheduler, as the pipeline's OS user:
+   `PIPELINE_TICK=1 claude -p "/pipeline-tick" --permission-mode dontAsk`
+   (a desktop app scheduled task works too: `docs/Pipeline.md` § *Setup*,
+   step 5).
 5. **Feed it** — open an issue labelled `idea` with one line of what you want.
 
 ## Requirements
@@ -98,9 +119,12 @@ gates. The kill switch is one label: `pipeline:pause` on any open issue.
 - GitHub with **branch protection** available: a public repository, or GitHub
   Pro/Team for a private one.
 - A second GitHub account for the reviewer bot.
-- A fine-grained token for the agents: this repository only, no Administration
-  and no Workflows permission. The platform rules hold because the agents
-  cannot change them (`docs/Pipeline.md` § *What binds an agent*).
+- A fine-grained token for the agents: this repository only,
+  Administration read-only (so the tick can see branch protection is still
+  on), no Administration write and no Workflows permission. The platform rules
+  hold because the agents cannot change them, as long as this token is the
+  only GitHub credential the tick's OS user holds (`docs/Pipeline.md`
+  § *What binds an agent, and what only guides it*).
 - On the machine running the tick: `gh` (authenticated with that token), `jq`,
   Python ≥ 3.9, bash (Git Bash on Windows), and the project's toolchain.
 
@@ -123,6 +147,7 @@ gates. The kill switch is one label: `pipeline:pause` on any open issue.
                  portability.yml (the hooks on macOS and Windows)
   ISSUE_TEMPLATE/ agent-task.md, asset-task.md
   pull_request_template.md
+CHANGELOG.md              what each merged wave changed
 CLAUDE.md                 project guidelines template
 CONTRIBUTING-agents.md    the contract: seams, allowlist, DoD, escalation, review routing
 docs/
@@ -140,9 +165,13 @@ run_tests.sh              the single test entry point (here: the pipeline's own 
 .claude/bin/pipeline run              # dry run: what a tick would do now
 .claude/bin/pipeline run --apply      # one tick's bookkeeping and claims (the tick runs this)
 .claude/bin/pipeline lint 42          # is issue #42 ready, and if not, why
-.claude/bin/pipeline setup-repo       # labels, repo settings, branch protection, bot access
+.claude/bin/pipeline checks 12 --wait # PR #12's required checks, read the way the tick reads them
+.claude/bin/pipeline claim issue 42 --interactive  # work #42 by hand; the tick leaves it alone
+.claude/bin/pipeline release issue 42 --hold       # hand it back to the pipeline
+.claude/bin/pipeline setup-repo --dry-run          # every call setup-repo would make
+.claude/bin/pipeline setup-repo       # labels, settings, protection, bot access (in a terminal, your own login)
 .claude/bin/pipeline doctor           # is every part of the setup in place
-.claude/bin/pipeline stats            # what the pipeline did in the last 30 days
+.claude/bin/pipeline stats --days 7   # what the pipeline did (default: the last 30 days)
 .claude/bin/gh-reviewer api user      # is the reviewer token working
 ./run_tests.sh                        # the test entry point
 ```
@@ -157,10 +186,17 @@ run_tests.sh              the single test entry point (here: the pipeline's own 
 - The optional `portability` workflow runs on macOS and Windows runners, which
   cost ten and two times the Linux minutes on a private repository. It runs
   only when the hooks or the pipeline change.
-- The tick runs locally, so it only runs while the Claude desktop app (or your
-  `/loop` session) is running. Missed scheduled runs catch up on the next start.
+- The tick runs on your machine. Started by the OS scheduler, it runs while the
+  machine is on; as a desktop app scheduled task, only while the app runs
+  (missed runs catch up on the next start); in a `/loop` session, only while
+  you watch it.
 - The allowlist guard only sees edits made through Claude's file-editing tools;
   shell writes are caught by the CI `allowlist` job instead.
+- The hooks, the permission rules and the bot's token file are guard rails,
+  not boundaries: every agent runs as the same OS user and could read the
+  bot's token. What holds against a determined agent is branch protection and
+  the agents' restricted token (`docs/Pipeline.md` § *What binds an agent, and
+  what only guides it*).
 - The pipeline trusts the design docs. If they are vague, the planner files
   vague issues and triage escalates them to you — the fix is better docs, not a
   smarter agent.
