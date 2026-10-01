@@ -166,18 +166,24 @@ class AllowRuleTests(unittest.TestCase):
         self.assertTrue(rule_matches("./run_tests.sh *", "./run_tests.sh"))
 
     def test_edits_are_allowed_in_worktrees_and_scratch_only(self):
-        edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith(("Edit(", "Write("))}
+        edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith("Edit(")}
         for rule in edit_rules:
-            self.assertRegex(rule, r"^(Edit|Write)\(/(\.claude/worktrees|\.pipeline-tmp)/\*\*\)$")
+            self.assertRegex(rule, r"^Edit\(/(\.claude/worktrees|\.pipeline-tmp)/\*\*\)$")
 
     def test_scratch_is_outside_the_protected_claude_directory(self):
         # dontAsk refuses every write under .claude/ except .claude/worktrees/,
         # whatever the allow rules say: the planner's scratch file under
         # .claude/tmp/ was refused in the first live run.
-        edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith(("Edit(", "Write("))}
+        edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith("Edit(")}
         for rule in edit_rules:
-            self.assertTrue(not rule.startswith(("Edit(/.claude/", "Write(/.claude/"))
-                            or "/.claude/worktrees/" in rule, rule)
+            self.assertTrue(not rule.startswith("Edit(/.claude/") or "/.claude/worktrees/" in rule, rule)
+
+    def test_file_rules_are_edit_rules(self):
+        # Claude Code matches file permissions on Edit(path) rules only, for
+        # every file-editing tool; a Write(path) rule grants nothing and is
+        # warned about at the start of every tick.
+        write_rules = [r for r in SETTINGS["permissions"]["allow"] if r.startswith("Write(")]
+        self.assertEqual(write_rules, [])
 
 
 class HookRegistrationTests(unittest.TestCase):
