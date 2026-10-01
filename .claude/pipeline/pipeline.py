@@ -2287,9 +2287,9 @@ def cmd_run(args) -> int:
     out = plan.to_json()
     out["setup_problems"] = out["setup_problems"] + synced + preflight() + CONFIG_WARNINGS
     if not args.apply and tick_env:
-        held = "would" if snap["require_tick_environment"] else "would not (require_tick_environment is off)"
-        out["setup_problems"].append(f"not the tick's environment (a tick run like this {held} hold): "
-                                     + "; ".join(tick_env))
+        held = ("a tick run like this would hold" if snap["require_tick_environment"] else
+                "require_tick_environment is off, so a tick run like this would not hold")
+        out["setup_problems"].append(f"not the tick's environment ({held}): " + "; ".join(tick_env))
     if args.apply:
         # Paused or not: the status issue needs its label too.
         made = gh.ensure_labels()
