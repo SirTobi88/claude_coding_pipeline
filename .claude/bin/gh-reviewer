@@ -54,6 +54,9 @@ merge_flags_ok() {
 review_fields_ok() {
     local commit=0 event=0 body=0
     while [ $# -gt 0 ]; do
+        # The flag is its own word: `"-F body=@/abs" "body=@x.md"` would
+        # otherwise pass the pattern below with a body the check never saw.
+        case "$1" in -f|-F) ;; *) return 1 ;; esac
         case "$1 ${2:-}" in
             "-f commit_id="*) [[ $2 =~ ^commit_id=[0-9a-f]{1,40}$ ]] || return 1; commit=$((commit + 1)) ;;
             "-f event="*) [[ $2 =~ ^event=(APPROVE|REQUEST_CHANGES|COMMENT)$ ]] || return 1; event=$((event + 1)) ;;

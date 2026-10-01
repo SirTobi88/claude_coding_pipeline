@@ -78,6 +78,13 @@ REFUSED = [
      "-F", "body=@x.md", "-f", "event=COMMENT"],
     ["api", "repos/o/r/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
      "-f", "body=x"],
+    # A flag glued to a value in one word: only the next word would be checked.
+    ["api", "repos/o/r/pulls/1/reviews", "-F body=@/Users/x/.config/token", "body=@x.md",
+     "-f", "commit_id=abc", "-f", "event=APPROVE"],
+    ["api", "repos/o/r/pulls/1/reviews", "-f commit_id=zz", "commit_id=abc",
+     "-f", "event=APPROVE", "-F", "body=@x.md"],
+    ["api", "repos/o/r/pulls/1/reviews", "-f", "commit_id=abc", "-f event=x", "event=APPROVE",
+     "-F", "body=@x.md"],
     ["pr", "view", "105", "-R", "other/repo"],
     ["pr", "view", "105", "--web"],
     # 2. `api user` with any method and any fields.
