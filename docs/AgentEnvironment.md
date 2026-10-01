@@ -91,7 +91,9 @@ asked about. What that allows, and why:
 - **A refused command** is rewritten once in that form. Still refused, the job
   cannot finish unattended: the agent commits and pushes what it has, escalates
   naming the command, and releases its claim. Stopping silently leaves the item
-  claimed until the claim goes stale.
+  claimed until the claim goes stale. A reviewer that cannot run a done-check
+  CI does not cover asks the owner instead (NEEDS_HUMAN, naming the command):
+  approving would merge a line nothing has checked.
 - **Edits** — inside `.claude/worktrees/` (every implementer and reviewer works
   in one) and `.pipeline-tmp/`, nowhere else.
 - **Scratch files** — PR bodies, issue bodies and review reports go to

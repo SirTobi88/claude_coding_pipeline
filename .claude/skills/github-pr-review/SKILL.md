@@ -68,9 +68,11 @@ names `<sha>`, write the literal value.
 `$?`, `;`-chains, heredocs or `$(…)`, and fix files with the Edit tool.
 - A done-check written as a chain (`! grep -nF '<text>' <file>`) is run as its
   plain part, `grep -cF '<text>' <file>`, and judged by what it prints.
-- A command that is refused even in plain form is not a defect of the PR. It
-  counts like a tool this machine lacks (§ 3): name the command in the verdict
-  and judge the rest.
+- A done-check that is refused even in plain form is not a defect of the PR,
+  and not a missing tool either: every unattended run is refused the same way.
+  If CI covers the line, judge it by CI. If not, nothing checks it before
+  GitHub merges: judge the rest, and unless something else already asks for
+  changes, the verdict is NEEDS_HUMAN (§ 9), naming the command.
 
 ## 1. Worktree
 
