@@ -66,6 +66,9 @@ names `<sha>`, write the literal value.
 **The pipeline runs you in `dontAsk` mode** (`docs/AgentEnvironment.md`
 § Permissions). Run one plain command per Bash call, with no shell variables,
 `$?`, `;`-chains, heredocs or `$(…)`, and fix files with the Edit tool.
+- Call the bot as `.claude/bin/gh-reviewer`, from the repository root, never by
+  an absolute path: the allow rule matches only the relative form, and
+  `dontAsk` refuses the other.
 - A done-check written as a chain (`! grep -nF '<text>' <file>`) is run as its
   plain part, `grep -cF '<text>' <file>`, and judged by what it prints.
 - A done-check that is refused even in plain form is not a defect of the PR,
