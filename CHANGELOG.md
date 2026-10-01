@@ -8,6 +8,28 @@ waves, not releases.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Wave 6] - 2026-09-29
+
+Commit `864c235` — what the first live tick found.
+
+### Added
+- A new `pipeline checks <PR> [--wait]` command replaces `gh pr checks` in the
+  resolver, triage, and review prompts, and `pipeline doctor` now reports
+  whether the login can read CI.
+
+### Changed
+- CI is now read through the Actions API, from a commit's Actions jobs and
+  commit statuses, because a fine-grained token has no Checks permission and
+  `statusCheckRollup`, check runs, and `gh pr checks` are unreadable to it on a
+  private repository, which killed the first live tick on its third survey.
+- Scratch files moved from `.claude/tmp/` to `.pipeline-tmp/`, because
+  `dontAsk` refuses every write under `.claude/` except `.claude/worktrees/`,
+  whatever the allow rules say; an adopter's `.gitignore` has to follow.
+
+### Fixed
+- The hook suite now clears the environment variables the hooks read, so it
+  passes inside a tick (`PIPELINE_TICK=1`) as it does in a terminal.
+
 ## [Wave 5] - 2026-09-29
 
 Commit `466aeb6` — docs that say what the pipeline does.
