@@ -121,6 +121,7 @@ until it closes. Keep the token in a file, here `<token file>`, for example
 macOS and Linux (bash or zsh), from the repository root:
 
 ```bash
+test -f <token file> && echo "is a file"
 export GH_TOKEN="$(cat <token file>)"
 export PIPELINE_TICK=1
 gh auth status
@@ -140,14 +141,24 @@ claude --permission-mode dontAsk
 
 Then `/pipeline-tick` in that session. Before it:
 
-- **`gh auth status` must name the token from `GH_TOKEN`** (`(GH_TOKEN)`, a
-  `github_pat_…` token). If it shows `(keyring)` or a `gho_…`/`ghp_…` token,
-  `GH_TOKEN` is empty and the tick would run with your full login: stop.
-- **`doctor` must show 0 failing**, and its *CI readable* line OK.
+- **`gh auth status` must name the token from `GH_TOKEN` as the active
+  account** (`(GH_TOKEN)`, a `github_pat_…` token). Your own `(keyring)` login
+  may be listed after it as inactive. If the active account is `(keyring)` or
+  a `gho_…`/`ghp_…` token, `GH_TOKEN` is empty and the tick would run with
+  your full login: stop.
+- **`doctor` must show 0 failing**, and its *gh login* and *CI readable* lines
+  OK. A login that is not a fine-grained token is only a warning there.
+- **`git push` does not read `GH_TOKEN`.** It uses the token only when `gh` is
+  git's credential helper (`gh auth setup-git`; `git config credential.helper`
+  shows which one is). With the keychain helper or an SSH remote, the agents'
+  pushes go out with your full login — a guard rail, not a boundary
+  (`docs/Pipeline.md` § Setup, step 2).
 - **The token path must be a file.** Saving a token "into" a new folder of
   that name is easy, and then PowerShell's `Get-Content` answers "access
   denied" and `GH_TOKEN` stays empty. To save a copied token straight from the
-  clipboard into a file, with nothing on screen and no `.txt` added:
+  clipboard into a file, with nothing on screen and no `.txt` added — first
+  its folder, which usually does not exist yet:
+  `New-Item -ItemType Directory -Force (Split-Path "<token file>")`, then
   `(Get-Clipboard).Trim() | Set-Content -Path "<token file>" -NoNewline -Encoding ascii`.
   `Get-Item "<token file>" | Select-Object Mode` must show no `d`.
 - **In PowerShell on Windows, `bash` is usually not on `PATH`**, so the
@@ -162,7 +173,8 @@ Review pull requests from another window, in the repository the PR belongs to:
 `/github-pr-review 35` means PR 35 *of the current directory's repository*.
 In the tick's window, `GH_TOKEN` reaches only that one repository, and with
 `PIPELINE_TICK=1` the bash guard keeps the session from acting as the bot
-itself.
+itself. Review only pull requests the tick has not claimed: a review by hand
+and the tick's reviewer on the same PR both use `.claude/worktrees/review-<N>`.
 
 ---
 
