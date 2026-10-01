@@ -64,9 +64,7 @@
       "Bash(python -m unittest *)",
       "Bash(python3 -m unittest *)",
       "Edit(/.claude/worktrees/**)",
-      "Write(/.claude/worktrees/**)",
-      "Edit(/.pipeline-tmp/**)",
-      "Write(/.pipeline-tmp/**)"
+      "Edit(/.pipeline-tmp/**)"
     ]
   },
   "hooks": {
