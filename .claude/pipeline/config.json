@@ -8,6 +8,7 @@
   "agent_login": "",
   "control_paths": [".github/", ".claude/", "run_tests.sh", "CLAUDE.md", "CONTRIBUTING-agents.md", "docs/Pipeline.md"],
   "require_protection": true,
+  "require_tick_environment": false,
   "limits": {
     "max_parallel_implement": 3,
     "max_parallel_review": 2,

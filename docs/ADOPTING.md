@@ -62,7 +62,7 @@ editing.
 
 | Where | What to set |
 |---|---|
-| `.claude/pipeline/config.json` | `project`, `default_branch`, `test_command`, `required_checks`, `roadmap_docs`, `reviewer_token_file`, `agent_login` (**required when the repository belongs to an organisation**: the login whose token the agents use; on a personal repository it defaults to the owner), `control_paths` (add any file of yours that decides what agents may do), `limits` |
+| `.claude/pipeline/config.json` | `project`, `default_branch`, `test_command`, `required_checks`, `roadmap_docs`, `reviewer_token_file`, `agent_login` (**required when the repository belongs to an organisation**: the login whose token the agents use; on a personal repository it defaults to the owner), `control_paths` (add any file of yours that decides what agents may do), `limits`, `require_tick_environment` (**set it to `true`** — this template's own repository runs its tick on the owner's login on purpose and ships `false`; with `true`, a tick outside the agents' token and `PIPELINE_TICK=1` holds, `docs/Pipeline.md` § Setup, step 5) |
 | `.claude/settings.json` | if your `test_command` differs, replace the `Bash(./run_tests.sh *)` rule with it, and the matching entry in `USED` in `.claude/pipeline/tests/test_settings.py` |
 | `run_tests.sh` (or your `test_command`) | runs the whole suite; finds its own tools; first line says what ran, last line is a summary; exit code is the result |
 | `.github/workflows/ci.yml` → job `ci` | install your toolchain (pinned versions), run the test command |

@@ -81,6 +81,96 @@ class PauseTests(unittest.TestCase):
         self.assertFalse(plan.paused)
         self.assertTrue(any("Administration" in x for x in plan.setup_problems))
 
+    def test_outside_the_tick_environment_holds_everything(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.READY])], tick_env=["PIPELINE_TICK is not set to 1"])
+        self.assertTrue(plan.paused)
+        self.assertEqual(plan.dispatch, [])
+        self.assertIn("not the tick's environment", plan.pause_reason)
+        self.assertTrue(any("PIPELINE_TICK=1" in w for w in plan.awaiting_human))
+
+    def test_the_tick_environment_can_be_waived(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.READY])], require_tick_environment=False,
+                   tick_env=["the gh login is a gho_… token"])
+        self.assertFalse(plan.paused)
+        self.assertEqual(plan.dispatch[0]["kind"], "implement")
+        self.assertTrue(any("gho_" in x for x in plan.setup_problems))
+
+    def test_the_tick_environment_holds_nothing_when_it_is_right(self):
+        plan = run([issue(5, [p.AGENT_TASK, p.READY])], tick_env=[])
+        self.assertFalse(plan.paused)
+
+
+class TickEnvironmentTests(unittest.TestCase):
+    PAT = "github.com\n  ✓ Logged in to github.com account bot (GH_TOKEN)\n  - Active account: true\n" \
+          "  - Token: github_pat_11ABCDEFG0secretsecret\n"
+    GHO = "github.com\n  ✓ Logged in to github.com account owner (keyring)\n  - Active account: true\n" \
+          "  - Token: gho_************************************\n"
+
+    def reasons(self, env, stdout, returncode=0):
+        def fake_run(args, **_):
+            if args[0] == "git":
+                return SimpleNamespace(returncode=0, stdout="https://github.com/o/r.git\n", stderr="")
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return p.tick_environment(env=env, run=fake_run)
+
+    def test_the_tick_environment_is_empty(self):
+        self.assertEqual(self.reasons({"PIPELINE_TICK": "1"}, self.PAT), [])
+
+    def test_a_missing_pipeline_tick_is_named(self):
+        self.assertTrue(any("PIPELINE_TICK" in r for r in self.reasons({}, self.PAT)))
+
+    def test_the_owners_login_is_named(self):
+        for token in ("gho_", "ghp_"):
+            with self.subTest(token=token):
+                out = self.reasons({"PIPELINE_TICK": "1"}, self.GHO.replace("gho_", token))
+                self.assertEqual(len(out), 1)
+                self.assertIn(token, out[0])
+
+    def test_the_active_account_counts_not_the_keyring_behind_it(self):
+        # gh 2.40+: GH_TOKEN listed first and active, the keyring login inactive after it.
+        both = self.PAT + self.GHO.replace("true", "false")
+        self.assertEqual(self.reasons({"PIPELINE_TICK": "1"}, both), [])
+        flipped = self.PAT.replace("true", "false") + self.GHO
+        self.assertEqual(len(self.reasons({"PIPELINE_TICK": "1"}, flipped)), 1)
+
+    def test_no_token_text_in_the_reasons(self):
+        out = " ".join(self.reasons({}, self.PAT.replace("Active account: true", "Active account: false")
+                                    .replace("github_pat_", "ghp_")))
+        self.assertNotIn("11ABCDEFG0", out)
+        self.assertNotIn("secret", out)
+        self.assertNotIn("****", out)
+
+    def test_not_logged_in(self):
+        self.assertTrue(any("no active login" in r for r in self.reasons({"PIPELINE_TICK": "1"}, "", 1)))
+
+    def test_a_failing_inactive_account_does_not_hold(self):
+        # gh exits 1 when any account fails -- an expired keyring login behind
+        # a good GH_TOKEN included. What the active account prints decides.
+        self.assertEqual(self.reasons({"PIPELINE_TICK": "1"}, self.PAT, returncode=1), [])
+
+    def test_only_the_repositorys_host_counts(self):
+        calls = []
+
+        def fake_run(args, **_):
+            calls.append(args)
+            if args[0] == "git":
+                return SimpleNamespace(returncode=0, stdout="git@github.com:o/r.git\n", stderr="")
+            host = args[args.index("--hostname") + 1]
+            out = self.GHO if host == "github.com" else self.PAT.replace("github.com", host)
+            return SimpleNamespace(returncode=0, stdout=out, stderr="")
+        reasons = p.tick_environment(env={"PIPELINE_TICK": "1"}, run=fake_run)
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("gho_", reasons[0])
+        self.assertIn(["gh", "auth", "status", "--active", "--hostname", "github.com"], calls)
+        self.assertEqual(p.tick_environment(env={"PIPELINE_TICK": "1", "GH_HOST": "ghe.example.com"},
+                                            run=fake_run), [])
+
+    def test_the_host_comes_from_the_remote(self):
+        for url, host in (("https://github.com/o/r.git", "github.com"), ("git@ghe.example.com:o/r.git",
+                          "ghe.example.com"), ("ssh://git@ghe.example.com/o/r", "ghe.example.com"), ("", "github.com")):
+            with self.subTest(url=url):
+                self.assertEqual(p.repo_host({}, lambda *a, **k: SimpleNamespace(stdout=url)), host)
+
 
 class BudgetTests(unittest.TestCase):
     def test_the_daily_budget_trims_the_dispatch(self):
@@ -199,6 +289,9 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["required checks"][0], "ok")
         self.assertEqual(report["test command allowed"][0], "ok")
         self.assertEqual(report["CI readable"][0], "ok")
+        self.assertEqual(report["tick environment"][0], "warn")
+        self.assertIn("gho_", report["tick environment"][1])
+        self.assertNotIn("****", report["tick environment"][1])
 
     def test_a_token_that_cannot_read_ci_fails_the_report(self):
         gh = FakeGh(responses=[
