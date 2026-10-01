@@ -83,8 +83,8 @@ it came from — they are the gaps the rules above left open.
 **Protection binds only those who cannot change it.** The agents ran with the
 owner's full `gh` login, an admin's, and `gh api` was pre-approved. Any agent
 could have deleted the protection it was judged by. The agents now get a token
-without Administration or Workflows permission; the owner's login is for
-`setup-repo`.
+with Administration read-only and neither Administration write nor Workflows
+permission; the owner's login is for `setup-repo`.
 
 **A required check is only as trusted as the workflow that runs it.** Under
 `pull_request`, GitHub runs the workflow file from the pull request, so a PR
