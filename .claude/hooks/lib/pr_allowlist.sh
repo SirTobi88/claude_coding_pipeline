@@ -35,8 +35,8 @@
 # Requires: gh (authenticated), jq, and lib/issue_scope.sh sourced first.
 # Written for bash 3.2, like issue_scope.sh. Every gh call is checked before
 # its output is piped, so the result never depends on the caller's pipefail,
-# and every jq result goes through `tr -d '\r'`: jq on Windows ends lines with
-# CRLF, and a path with a stray \r matches no allowlist entry.
+# and every jq result goes through `scope_jq`, which drops the CR that jq on
+# Windows ends lines with.
 
 # Statuses an issue may carry while a pull request for it is legitimately open.
 PR_ALLOWLIST_IN_FLIGHT="status:in-progress status:in-review status:escalated status:needs-human"
@@ -58,12 +58,12 @@ pr_allowlist_check() {
         _pra_err "Could not read PR #$PR."
         return 1
     }
-    body="$(printf '%s' "$raw" | jq -r '.body // ""' | tr -d '\r')"
+    body="$(printf '%s' "$raw" | scope_jq -r '.body // ""')"
     # What closes on merge: GitHub's own reading of the body (every spelling,
     # `owner/repo#N` and issue URLs included), plus the plain keywords as whole
     # words -- "prefixes #12" must not read as "fixes #12" -- in case GitHub has
     # not linked them yet.
-    closes="$( { printf '%s' "$raw" | jq -r '.closingIssuesReferences[]?.number' | tr -d '\r'
+    closes="$( { printf '%s' "$raw" | scope_jq -r '.closingIssuesReferences[]?.number'
                  printf '%s' "$body" \
                    | grep -oiE '(^|[^[:alnum:]_])(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)):?[[:space:]]+#[0-9]+' \
                    | grep -oE '#[0-9]+' | tr -d '#'
@@ -111,7 +111,7 @@ pr_allowlist_check() {
         return 1
     }
     changed="$(mktemp)"
-    printf '%s' "$raw" | jq -r '.[] | .filename, (.previous_filename // empty)' | tr -d '\r' > "$changed"
+    printf '%s' "$raw" | scope_jq -r '.[] | .filename, (.previous_filename // empty)' > "$changed"
     if [ ! -s "$changed" ]; then
         _pra_err "PR #$PR reports no changed files -- refusing to pass on an empty diff."
         return 1
@@ -147,8 +147,8 @@ pr_allowlist_check() {
         _pra_err "Could not read issue #$issue from GitHub (network or auth). Re-run the job."
         return 1
     }
-    state="$(printf '%s' "$meta" | jq -r '.state // ""' | tr -d '\r')"
-    labels=" $(printf '%s' "$meta" | jq -r '[.labels[]?.name] | join(" ")' | tr -d '\r') "
+    state="$(printf '%s' "$meta" | scope_jq -r '.state // ""')"
+    labels=" $(printf '%s' "$meta" | scope_jq -r '[.labels[]?.name] | join(" ")') "
     if [ "$state" != "OPEN" ]; then
         _pra_err "Issue #$issue is ${state:-unreadable}, not open: a closed issue's allowlist binds nothing."
         return 1
@@ -173,11 +173,11 @@ pr_allowlist_check() {
             _pra_err "Could not list open pull requests. Re-run the job."
             return 1
         }
-        others="$(printf '%s' "$raw" | jq -r --arg p "agent/$issue-" --argjson n "$issue" --argjson me "$PR" \
+        others="$(printf '%s' "$raw" | scope_jq -r --arg p "agent/$issue-" --argjson n "$issue" --argjson me "$PR" \
                     '.[] | select(.number != $me and ((.isCrossRepository // false) | not)
                                   and ((.headRefName | startswith($p))
                                        or ([.closingIssuesReferences[]?.number] | index($n))))
-                         | .number' | tr -d '\r')"
+                         | .number')"
         if [ -n "$others" ]; then
             _pra_err "Issue #$issue already has open PR(s) #$(echo $others | sed 's/ /, #/g'). One PR per issue."
             return 1

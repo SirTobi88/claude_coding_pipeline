@@ -41,6 +41,8 @@ command -v jq  >/dev/null 2>&1 || allow
 
 payload="$(cat)"
 # Edit, Write and MultiEdit name `file_path`; NotebookEdit names `notebook_path`.
+# `jq | tr` inline rather than scope_jq: a function in a pipeline is one more
+# fork, and on Windows every fork on this path is felt on every edit.
 file_path="$(printf '%s' "$payload" \
              | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null \
              | tr -d '\r')"
@@ -84,19 +86,26 @@ while [ ! -d "$_dir" ]; do
     _dir="$_next"
 done
 
-root="$(git -C "$_dir" rev-parse --show-toplevel 2>/dev/null)" || allow
-[ -n "$root" ] || allow
-
-# Repo-relative path, as git spells it. `--show-prefix` answers in the
+# One git call, three lines -- this runs on every edit: the checkout's root,
+# the directory's repo-relative prefix (an empty line at the top level), and
+# the branch.
+#
+# The repo-relative path is git's spelling. `--show-prefix` answers in the
 # repository's own spelling -- its letter case, its symlinks resolved -- however
 # the path arrived. Comparing the typed path against the root as text failed
 # open twice: on macOS a worktree under /tmp is /private/tmp to git, and on
 # Windows and macOS `e:\repo\SRC` is `E:/repo/src` to git; both read as
 # "outside the repository", which the guard allows.
-prefix="$(git -C "$_dir" rev-parse --show-prefix 2>/dev/null)" || allow
+nl='
+'
+parsed="$(git -C "$_dir" rev-parse --show-toplevel --show-prefix --abbrev-ref HEAD 2>/dev/null)" || allow
+root="${parsed%%"$nl"*}"
+prefix="${parsed#*"$nl"}"
+branch="${prefix#*"$nl"}"
+prefix="${prefix%%"$nl"*}"
+[ -n "$root" ] || allow
 rel="$prefix$_tail"
 
-branch="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)" || allow
 issue="$(scope_issue_from_branch "$branch")"
 
 # Writing from an agent's worktree into another worktree of the same
