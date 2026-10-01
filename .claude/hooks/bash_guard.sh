@@ -61,10 +61,45 @@ else
 fi
 [ -n "$cmd" ] || exit 0
 
+# A newline ends a command as `;` does, so a call on a later line is checked
+# like one on the first. Two exceptions: a backslash-newline continues the
+# line, and a heredoc body is a mention, never a call -- its lines are joined
+# without a separator, so no anchored check sees them as a command start.
+# Pure bash, and only for a command that spans lines: this runs before every
+# Bash call.
+nl='
+'
+lines="$cmd"
+case "$cmd" in
+    *"$nl"*)
+        heredoc_start='(^|[^<])<<(-?)[[:space:]]*['"'"'"]?([A-Za-z_][A-Za-z0-9_]*)['"'"'"]?'
+        lines="" delim="" strip_tabs="" cont=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$delim" ]; then
+                end="$line"
+                [ -n "$strip_tabs" ] && end="${end#"${end%%[!	]*}"}"
+                [ "$end" = "$delim" ] && delim=""
+                lines="$lines $line"
+                continue
+            fi
+            if [ -n "$cont" ] || [ -z "$lines" ]; then
+                lines="$lines $line"
+            else
+                lines="$lines ; $line"
+            fi
+            cont=""
+            case "$line" in *\\) lines="${lines%\\}" cont=1 ;; esac
+            if [[ $line =~ $heredoc_start ]]; then
+                delim="${BASH_REMATCH[3]}" strip_tabs="${BASH_REMATCH[2]}"
+            fi
+        done <<< "$cmd"
+        ;;
+esac
+
 # One spelling to match against: whitespace runs collapsed, gh's -R/--repo
 # option dropped wherever it sits (`gh -R o/r issue edit`), and git's -C <dir>
 # too (`git -C .claude/worktrees/review-5 push` is a `git push`).
-norm="$(printf '%s' "$cmd" | tr -s ' \t\n' '   ' \
+norm="$(printf '%s' "$lines" | tr -s ' \t\n' '   ' \
         | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
 
 refuse() {
