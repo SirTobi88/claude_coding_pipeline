@@ -49,7 +49,7 @@ them — is refused, not asked about (`docs/AgentEnvironment.md` § Permissions)
   the path relative to the repository root (`.claude/worktrees/<name>`), never
   an absolute one.
 - **A done-check written as a chain** (`! grep -nF '<text>' <file>`) is run as
-  its plain part — `grep -c '<text>' <file>` — and judged by what it prints: `0`
+  its plain part — `grep -cF '<text>' <file>` — and judged by what it prints: `0`
   for an absence.
 
 **A refused command is not the end of the job.** Rewrite it once in the form

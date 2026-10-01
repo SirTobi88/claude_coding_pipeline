@@ -120,8 +120,9 @@ time, so do not serialise issues over a collision a worktree already solves.
   missing harness is what should be filed first. The implementer runs each line
   unattended, in `dontAsk` mode, so each is **one plain command**: no shell
   variables, `$?`, `;`-chains, `$(…)` or `!` (`docs/AgentEnvironment.md`
-  § Permissions). For an absence, write the command and what it must print:
-  ``grep -c 'The repo has none' docs/x.md`` prints `0`. `git grep -n '<text>' --
+  § Permissions). For an absence, write the command and what it must print —
+  such a line is judged by its output, not its exit code (`grep -c` exits 1
+  when it counts `0`): ``grep -c 'The repo has none' docs/x.md`` prints `0`. `git grep -n '<text>' --
   <path>` and `git diff --name-only origin/<default>...HEAD` are plain too.
 - **Blocked by**: real issue numbers, or "nothing".
 - **Size**: if it does not fit "one branch, one review sitting", split it.

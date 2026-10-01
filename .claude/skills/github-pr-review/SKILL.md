@@ -67,7 +67,7 @@ names `<sha>`, write the literal value.
 § Permissions). Run one plain command per Bash call, with no shell variables,
 `$?`, `;`-chains, heredocs or `$(…)`, and fix files with the Edit tool.
 - A done-check written as a chain (`! grep -nF '<text>' <file>`) is run as its
-  plain part, `grep -c '<text>' <file>`, and judged by what it prints.
+  plain part, `grep -cF '<text>' <file>`, and judged by what it prints.
 - A command that is refused even in plain form is not a defect of the PR. It
   counts like a tool this machine lacks (§ 3): name the command in the verdict
   and judge the rest.
