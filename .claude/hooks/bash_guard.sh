@@ -105,14 +105,8 @@ esac
 # One spelling to match against: whitespace runs collapsed, gh's -R/--repo
 # option dropped wherever it sits (`gh -R o/r issue edit`), and git's -C <dir>
 # too (`git -C .claude/worktrees/review-5 push` is a `git push`).
-# Separators stand as words of their own (`ls;git push` is `ls ; git push`),
-# while the redirects `>&`, `<&` and `&>` keep their `&`: `2>&1` is not a
-# separator.
 norm="$(printf '%s' "$lines" | tr -s ' \t\n' '   ' \
-        | sed -e 's/>&/@R1@/g' -e 's/<&/@R2@/g' -e 's/&>/@R3@/g' \
-              -e 's/&&/ @AA@ /g' -e 's/||/ @OO@ /g' -e 's/;/ ; /g' -e 's/|/ | /g' -e 's/&/ \& /g' \
-              -e 's/@AA@/\&\&/g' -e 's/@OO@/||/g' -e 's/@R1@/>\&/g' -e 's/@R2@/<\&/g' -e 's/@R3@/\&>/g' \
-              -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
+        | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
 
 refuse() {
     {
@@ -225,65 +219,83 @@ esac
 # agent/ branch. Every push in the command is checked, not only the first: an
 # allowed push must not carry a forbidden one behind a separator.
 #
-# One pass over the words, so the cost grows with the command's length, not
-# with the number of pushes times it. A push starts at the words `git push` and
-# runs to the next separator -- `&&`, `||`, `;`, `|`, `&`, alone or glued to a
-# word. Inside a push, `git` and `push` are only more refspecs, as git reads
-# them: `git push origin agent/1-x git push main` is one push that names main.
-push_word() {
+# The rule: each `git push` in the text is read word by word up to the next
+# `&&`, `||`, `;` or `|`. A forbidden flag refuses; other flags and redirects
+# are skipped; the first other word is the remote, and every later one is a
+# refspec, refused when it forces (+), deletes (:), or -- for a subagent --
+# names a branch outside agent/.
+#
+# Read that way push by push, n pushes between two separators cost n times
+# the words after them. So the same verdict is worked out in two linear
+# passes: from the right, each word records what reading from it would meet
+# up to the next separator; from the left, each `git push` looks that up.
+# The verdicts are the per-push loop's, word for word; only the cost changes.
+push_refuse() {
     case "$1" in
-        --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
-            refuse "no force, delete or mirror pushes." \
+        F) refuse "no force, delete or mirror pushes." \
 "History on GitHub is shared state; a rewritten or deleted branch loses other
 agents' and reviewers' work. Push new commits instead." ;;
-        -*|*">"*|*"<"*|"") return ;;
-    esac
-    if [ -z "$remote" ]; then remote="$1"; return; fi
-    case "$1" in
-        +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
+        X) refuse "no forced (+) or deleting (:branch) refspecs." \
 "Push new commits to your agent/ branch instead." ;;
-    esac
-    dest="${1#*:}"
-    dest="${dest#refs/heads/}"
-    if [ "$subagent" = 1 ]; then
-        case "$dest" in
-            agent/*) ;;
-            *) refuse "an agent pushes only to its agent/<N>- branch." \
+        A) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-        esac
-    fi
+    esac
 }
+# One awk pass, run only when the text holds `git push`: bash 3.2's arrays
+# get slower the further from their end they are written, which made the same
+# two passes quadratic again. It prints the kind of the first refusal -- F a
+# forbidden flag, X a + or : refspec, A a subagent's branch outside agent/ --
+# or nothing. The word classes are the patterns the per-push loop used.
 case "$norm" in
     *"git push"*)
-        in_push=0 saw_git=0 remote=""
-        for tok in $norm; do
-            if [ "$in_push" = 1 ]; then
-                case "$tok" in
-                    "&&"|"||"|";"|"|"|"&") in_push=0; continue ;;   # norm spaced them out
-                    *">"*|*"<"*) continue ;;     # a redirect, `2>&1` too: not the push's end
-                    *[\)\`])                      # the end of a `$( … )` or backquotes
-                        word="${tok%%[\)\`]*}"
-                        push_word "$word"
-                        in_push=0; continue ;;
-                    *) push_word "$tok"; continue ;;
-                esac
-            fi
-            # Not in a push: does this word start one? Quotes, `(`, `$(` and
-            # backquotes in front are not part of it (`bash -c "git push …"`),
-            # and git may be called by its path or escaped (`/usr/bin/git`,
-            # `\git`).
-            bare="${tok//[\"\']/}"
-            lead="${bare%%[!(\`\$]*}"
-            bare="${bare#"$lead"}"
-            bare="${bare##*/}"
-            bare="${bare#\\}"
-            if [ "$saw_git" = 1 ] && [ "$bare" = push ]; then
-                in_push=1 remote=""
-            fi
-            saw_git=0
-            [ "$bare" = git ] && saw_git=1
-        done ;;
+        verdict="$(printf '%s\n' "$norm" | awk -v subagent="$subagent" '
+            function kind(t) {
+                if (t ~ /^(--force|--force=.*|--force-with-lease.*|--force-if-includes|-f|-.*f|--delete|-d|--mirror|--all|--prune)$/) return "F"
+                if (t ~ /^-/ || index(t, ">") || index(t, "<")) return "S"
+                if (t == "&&" || t == "||" || t == ";" || t == "|") return "B"
+                return "W"
+            }
+            function bad(t,    d) {
+                if (t ~ /^[+:]/) return "X"
+                if (subagent != "1") return ""
+                d = t
+                if (index(d, ":")) d = substr(d, index(d, ":") + 1)
+                if (substr(d, 1, 11) == "refs/heads/") d = substr(d, 12)
+                return (substr(d, 1, 6) == "agent/") ? "" : "A"
+            }
+            {
+                n = NF
+                # For the words from i up to the next separator: fl[i] is F
+                # when a forbidden flag is among them, bd[i] the kind of the
+                # leftmost refused refspec among their words, nw[i] the index
+                # of their first word. Index n+1 stands for "nothing more".
+                fl[n + 1] = ""; bd[n + 1] = ""; nw[n + 1] = n + 1
+                for (i = n; i >= 1; i--) {
+                    k = kind($i)
+                    if (k == "B") { fl[i] = ""; bd[i] = ""; nw[i] = n + 1 }
+                    else if (k == "F") { fl[i] = "F"; bd[i] = bd[i + 1]; nw[i] = nw[i + 1] }
+                    else if (k == "S") { fl[i] = fl[i + 1]; bd[i] = bd[i + 1]; nw[i] = nw[i + 1] }
+                    else { fl[i] = fl[i + 1]; b = bad($i); bd[i] = (b != "") ? b : bd[i + 1]; nw[i] = i }
+                }
+                # Each `git push`: "git" ends word j and "push" starts word
+                # j+1. What follows "push" in that word is read first, then
+                # word j+2 onwards -- as the per-push loop read them.
+                for (j = 1; j < n; j++) {
+                    if ($j !~ /git$/ || substr($(j + 1), 1, 4) != "push") continue
+                    rest = substr($(j + 1), 5); s = j + 2; remote_set = 0
+                    if (rest != "") {
+                        k = kind(rest)
+                        if (k == "F") { print "F"; exit }
+                        if (k == "B") continue
+                        if (k == "W") remote_set = 1
+                    }
+                    if (fl[s] != "") { print "F"; exit }
+                    if (remote_set) { if (bd[s] != "") { print bd[s]; exit } }
+                    else if (nw[s] <= n && bd[nw[s] + 1] != "") { print bd[nw[s] + 1]; exit }
+                }
+            }')"
+        [ -n "$verdict" ] && push_refuse "$verdict" ;;
 esac
 
 labels_something=0

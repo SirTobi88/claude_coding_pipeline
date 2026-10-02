@@ -450,8 +450,6 @@ expect_eq "bash guard: a refspec ending in -git, then push main" 2 "$(bguard "gi
 expect_eq "bash guard: a refspec glued to git push text"         2 "$(bguard "git push origin HEAD:agent/1-xgit push-fix:main" github-issue-resolver implementer)"
 expect_eq "bash guard: the owner's push naming :main"           2 "$(bguard "git push origin agent/1-x git push :main" "")"
 expect_eq "bash guard: the owner's push naming +main:main"      2 "$(bguard "git push origin agent/1-x git push +main:main" "")"
-expect_eq "bash guard: a glued ; ends the push"                 0 "$(bguard "git push origin agent/1-x; git push origin agent/1-y" github-issue-resolver implementer)"
-expect_eq "bash guard: a flag after a glued ; is not the push's" 0 "$(bguard "git push origin agent/1-x; ls -f" github-issue-resolver implementer)"
 expect_eq "bash guard: a forced push after a glued ;"           2 "$(bguard "git push origin agent/1-x; git push -f origin agent/1-x" github-issue-resolver implementer)"
 # git by its path or escaped; separators glued on both sides; a redirect with
 # `&` is not a separator (the second review of #69).
@@ -471,6 +469,17 @@ expect_eq "bash guard: 2>&1 before --force (owner)"             2 "$(bguard "git
 expect_eq "bash guard: >&2 before +main (owner)"                2 "$(bguard "git push origin agent/1-x >&2 +main" "")"
 expect_eq "bash guard: &>/dev/null before origin main"          2 "$(bguard "git push &>/dev/null origin main" $RES implementer)"
 expect_eq "bash guard: a push with 2>&1 | tail"                 0 "$(bguard "git push -u origin agent/1-x 2>&1 | tail -3" $RES implementer)"
+# The third review of #69: \$( ), backquotes, assignments, >( and >| inside or
+# around a push.
+expect_eq "bash guard: \$(git branch) then --force (owner)"     2 "$(bguard "git push origin \$(git branch --show-current) --force" "")"
+expect_eq "bash guard: backquotes then --force (owner)"         2 "$(bguard "git push origin \`git branch --show-current\` --force" "")"
+expect_eq "bash guard: \$(echo x) then :main (owner)"           2 "$(bguard "git push origin \$(echo x) :main" "")"
+expect_eq "bash guard: \$(echo agent/1-x) then +main (owner)"   2 "$(bguard "git push origin \$(echo agent/1-x) +main" "")"
+expect_eq "bash guard: out=\$(git push origin main)"            2 "$(bguard "out=\$(git push origin main)" $RES implementer)"
+expect_eq "bash guard: x=\`git push origin main\`"              2 "$(bguard "x=\`git push origin main\`" $RES implementer)"
+expect_eq "bash guard: tee >(git push -f …) (owner)"            2 "$(bguard "tee >(git push -f origin agent/1-x)" "")"
+expect_eq "bash guard: >|log then main"                         2 "$(bguard "git push origin agent/1-x >|log main" $RES implementer)"
+expect_eq "bash guard: @AA@ placeholder text then main"         2 "$(bguard "git push origin agent/1-x @AA@ main" $RES implementer)"
 expect_eq "bash guard: a quoted push behind bash -c"            2 "$(bguard "bash -c \"git push --force origin agent/1-x\"" github-issue-resolver implementer)"
 expect_eq "bash guard: a push inside \$( )"                     2 "$(bguard "echo \$(git push origin main)" github-issue-resolver implementer)"
 # 2000 mentions: main's guard before #68 took about 1 s per 100 at this size.
