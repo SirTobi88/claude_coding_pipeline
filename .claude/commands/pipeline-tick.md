@@ -68,7 +68,7 @@ A short block, nothing else:
 
 - **Dispatched** — one line per agent: kind, number, and the result it returned (PR URL, verdict, escalation).
 - **Waiting / in flight / deferred** — counts, with numbers.
-- **Needs you** — every `awaiting_human` entry. This is the only list the owner has to act on.
+- **Needs you** — every `awaiting_human` entry, and every command an agent's report names as refused. This is the only list the owner has to act on.
 - Any `FAILED` or `SKIPPED` line from `ops_done` or `claims`, verbatim.
 - If `status_issue` is a number, one line linking it; if it starts with `FAILED`, that line verbatim.
 
