@@ -1233,6 +1233,16 @@ class PreflightTests(unittest.TestCase):
         # A real lookup through this machine's bash: all four are there.
         self.assertEqual(p.guard_tools_missing(), [])
 
+    def test_a_bash_that_cannot_answer_is_not_read_as_all_found(self):
+        # It prints nothing; that must not mean "all four found" (review of #90).
+        from types import SimpleNamespace
+        failed = lambda *a, **k: SimpleNamespace(returncode=1, stdout="")
+        self.assertIsNone(p.guard_tools_missing(run=failed, bash=lambda: "/bin/bash"))
+
+        def hangs(*a, **k):
+            raise p.subprocess.TimeoutExpired("bash", 30)
+        self.assertIsNone(p.guard_tools_missing(run=hangs, bash=lambda: "/bin/bash"))
+
     def test_local_settings_dirty_tree_and_wrong_branch_are_reported(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

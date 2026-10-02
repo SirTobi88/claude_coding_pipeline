@@ -1838,15 +1838,20 @@ GUARD_TOOLS = ("awk", "tr", "sed", "grep")
 
 def guard_tools_missing(run=subprocess.run, bash=bash_path) -> list[str] | None:
     """Which of GUARD_TOOLS the guard's own bash cannot find; None when there
-    is no bash to ask. Asked of that bash, not of Python's PATH: on Windows the
-    tools live in Git's usr/bin, which Git Bash sees and PowerShell does not."""
+    is no bash to ask, or it could not answer. Asked of that bash, not of
+    Python's PATH: on Windows the tools live in Git's usr/bin, which Git Bash
+    sees and PowerShell does not."""
     b = bash()
     if not b:
         return None
     try:
         proc = run([b, "-c", 'for t in "$@"; do command -v "$t" >/dev/null 2>&1 || echo "$t"; done',
-                    "_", *GUARD_TOOLS], capture_output=True, text=True, encoding="utf-8")
-    except OSError:
+                    "_", *GUARD_TOOLS], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # A bash that failed to run the lookup prints nothing, which would read
+    # as "all four found".
+    if proc.returncode != 0:
         return None
     return [t for t in (proc.stdout or "").split() if t in GUARD_TOOLS]
 
