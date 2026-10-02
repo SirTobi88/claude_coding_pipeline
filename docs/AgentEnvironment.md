@@ -85,9 +85,13 @@ asked about. What that allows, and why:
   `head` or `grep` pass. Files are changed with the Edit and Write tools, never
   with `python`, `sed -i` or `cat >`. `git -C` takes the worktree's path
   relative to the repository root (`.claude/worktrees/<name>`), never an
-  absolute one. What was refused in practice, in one implementer run: a
-  `python - <<'E'` edit, a done-check chain (`f=…; ! grep … $f; echo a=$?`),
-  and `git -C E:/…/worktrees/<name> diff`.
+  absolute one. A `.claude/bin/` command is written exactly `.claude/bin/<name> …`, from the
+  repository root: never by an absolute path and never with a `./` prefix,
+  because the allow rules match that text. What was refused in practice, in
+  one implementer run: a `python - <<'E'` edit, a done-check chain
+  (`f=…; ! grep … $f; echo a=$?`), and `git -C E:/…/worktrees/<name> diff`;
+  and in the first scheduled tick (2026-10-01), the PR #46 reviewer's
+  `gh-reviewer` call by its absolute path.
 - **A refused command** is rewritten once in that form. Still refused, the job
   cannot finish unattended: the agent commits and pushes what it has, escalates
   naming the command, and releases its claim. Stopping silently leaves the item
