@@ -79,10 +79,7 @@ case "${1:-} ${2:-}" in
         # Read-only: who the token is. Bare, or with --jq.
         { [ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--jq" ]; }; } && allowed=1 ;;
     "api "*)
-        # No `.` or `..` segment: the owner and repo patterns admit dots.
-        if [[ ${2#/} =~ $review_endpoint ]] && [[ ! /${2#/}/ =~ /\.\.?/ ]]; then
-            review_fields_ok "${@:3}" && allowed=1
-        fi ;;
+        [[ ${2#/} =~ $review_endpoint ]] && review_fields_ok "${@:3}" && allowed=1 ;;
     "pr view")
         [ $# -eq 3 ] && [[ $3 =~ ^[0-9]+$ ]] && allowed=1 ;;
     "pr merge")
@@ -94,7 +91,7 @@ esac
 if [ "$allowed" = 0 ]; then
     echo "gh-reviewer: refusing 'gh ${1:-} ${2:-} ...' as the reviewer bot." >&2
     echo "It runs only the review's own calls: api user [--jq …];" >&2
-    echo "api repos/<owner>/<repo>/pulls/<N>/reviews -f commit_id=… -f event=… -F body=@…;" >&2
+    echo "api repos/{owner}/{repo}/pulls/<N>/reviews -f commit_id=… -f event=… -F body=@….md;" >&2
     echo "pr view <N>; pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>;" >&2
     echo "pr edit <N> --add-label spec-defect|status:needs-human. Use plain gh for anything else." >&2
     exit 4
@@ -109,14 +106,48 @@ else
         echo "Setup: docs/Pipeline.md § Setup." >&2
         exit 3
     fi
-    token="$(tr -d '[:space:]' < "$file")"
+    # Read in bash, not by a program the caller's PATH chooses.
+    token="$(< "$file")"
 fi
+token="${token//[[:space:]]/}"
 if [ -z "$token" ]; then
     echo "gh-reviewer: the reviewer token is empty." >&2
     exit 3
 fi
-# gh reads these from the environment, where no argument check sees them:
-# GH_REPO and GH_HOST point a call at another repository or host, the others
-# run another program or trust another certificate.
-unset GH_REPO GH_HOST GH_CONFIG_DIR GH_PAGER PAGER GH_BROWSER BROWSER SSL_CERT_FILE SSL_CERT_DIR
-GH_TOKEN="$token" exec gh "$@"
+
+# gh runs with an environment of our own, never the caller's. gh and git read
+# far more of it than any argument check sees: GH_REPO, GH_HOST, GIT_DIR and
+# git config variables pick the repository; HOME, XDG_CONFIG_HOME and
+# GH_CONFIG_DIR pick a config whose pager or socket would see the token; PATH
+# picks which `gh` gets it. So:
+#   - PATH is fixed, and gh is found on it -- not on the caller's;
+#   - gh's config and HOME are an empty directory of the checkout's own;
+#   - the working directory is the repository root, whose origin remote is
+#     what `{owner}/{repo}` and `pr <N>` resolve to;
+#   - only the network setup passes through (proxies, certificates), and on
+#     Windows what a program needs to start at all.
+# Bash reads BASH_ENV before this script runs, so that one stays the
+# caller's: a guard rail, not a boundary (docs/Pipeline.md § Merging).
+safe_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+safe_path="$safe_path:/mingw64/bin:/c/Program Files/GitHub CLI:/c/Program Files/Git/cmd"
+gh_bin="$(PATH="$safe_path" command -v gh)"
+if [ -z "$gh_bin" ]; then
+    echo "gh-reviewer: gh is not installed in a standard place ($safe_path)." >&2
+    exit 3
+fi
+root="$(cd "$here/../.." && pwd)"
+own="$root/.pipeline-tmp/gh-reviewer"
+mkdir -p "$own" || { echo "gh-reviewer: cannot create $own" >&2; exit 3; }
+keep=()
+for name in HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy \
+            SSL_CERT_FILE SSL_CERT_DIR SYSTEMROOT SystemRoot WINDIR windir COMSPEC ComSpec \
+            PATHEXT TEMP TMP TMPDIR; do
+    [ -n "${!name+x}" ] && keep+=("$name=${!name}")
+done
+cd "$root" || exit 3
+# Cleared in bash, not with `env -i NAME=value …`: that would put the token on
+# a command line, where any process listing shows it.
+for name in $(compgen -e); do unset "$name" 2>/dev/null; done
+for kv in ${keep[@]+"${keep[@]}"}; do export "$kv"; done
+export PATH="$safe_path" HOME="$own" GH_CONFIG_DIR="$own" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1
+GH_TOKEN="$token" GH_ENTERPRISE_TOKEN="$token" exec "$gh_bin" "$@"
