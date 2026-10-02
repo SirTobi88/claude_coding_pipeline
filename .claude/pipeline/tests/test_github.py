@@ -98,8 +98,8 @@ class ApplyOpsTests(unittest.TestCase):
         plan = p.Plan(ops=[
             {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
              "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
-            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 106, "label": p.NEEDS_HUMAN},
         ])
         done = p.apply_ops(gh, plan, lint_fn=None)
@@ -113,8 +113,8 @@ class ApplyOpsTests(unittest.TestCase):
         plan = p.Plan(ops=[
             {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
              "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
-            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
         ])
         p.apply_ops(gh, plan, lint_fn=None)
         self.assertEqual(gh.labels_of[("pr", 105)], set())

@@ -820,8 +820,9 @@ class OwnerAnswerTests(unittest.TestCase):
         self.assertEqual(plan.dispatch, [])
 
     def test_answered_comes_off_first_and_needs_human_last(self):
-        # A failed later removal must leave the PR waiting on the owner, never a
-        # stray human:answered that would answer the next question by itself (#96).
+        # A run that stops between removals must leave the PR waiting on the
+        # owner, never a stray human:answered that would answer the next
+        # question by itself (#96).
         prs = [pr(105, labels=[p.NEEDS_HUMAN, p.ANSWERED, "fix-round-2", "conflict-round-1"],
                   reviews=[review("COMMENTED")])]
         removed = [o["label"] for o in ops(run([], prs), "remove-label") if o["number"] == 105]

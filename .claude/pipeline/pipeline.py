@@ -850,10 +850,11 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
                                  "description": f"comments={comment_only} "
                                                 f"attempts={int(pr.get('reviewAttempts') or 0)}",
                                  "why": "the owner answered"})
-            # human:answered first, status:needs-human last. If a later removal
-            # fails, the PR is left waiting on the owner, who is asked again --
-            # never with a stray human:answered, which would answer the next
-            # question on this PR by itself.
+            # human:answered first, status:needs-human last. If the run stops
+            # between removals, the PR is left waiting on the owner, who is
+            # asked again -- never with a stray human:answered, which would
+            # answer the next question on this PR by itself. (A single removal
+            # that fails does not stop the others; that case is #98.)
             rounds = sorted(l for l in labels if l.startswith((FIX_ROUND, CONFLICT_ROUND)))
             for label in [ANSWERED, *rounds, NEEDS_HUMAN]:
                 plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": label,
