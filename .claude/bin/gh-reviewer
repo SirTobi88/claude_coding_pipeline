@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `gh`, acting as the reviewer bot account instead of the owner.
 #
-#   .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/123/reviews" -f commit_id=<sha> \
+#   .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/123/reviews" -f commit_id=<sha40> \
 #     -f event=APPROVE -F body=@.pipeline-tmp/review-123.md
 #
 # Branch protection requires one approving review from someone who is not the
@@ -44,7 +44,7 @@ export PATH="$safe_path"
 # runtime first; that call is refused, and so fails closed.)
 review_endpoint='^repos/[{]owner[}]/[{]repo[}]/pulls/[0-9]+/reviews$'
 
-# `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
+# `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha40>`
 merge_flags_ok() {
     local squash=0 delete=0 sha=0
     while [ $# -gt 0 ]; do
@@ -53,7 +53,7 @@ merge_flags_ok() {
             --squash) squash=1 ;;
             --delete-branch) delete=1 ;;
             --match-head-commit)
-                [[ ${2:-} =~ ^[0-9a-f]+$ ]] || return 1
+                [[ ${2:-} =~ ^[0-9a-f]{40}$ ]] || return 1
                 sha=1; shift ;;
             *) return 1 ;;
         esac
@@ -62,7 +62,7 @@ merge_flags_ok() {
     [ "$squash$delete$sha" = 111 ]
 }
 
-# The review itself, each field exactly once: `-f commit_id=<sha>
+# The review itself, each field exactly once: `-f commit_id=<sha40>
 # -f event=<EVENT> -F body=@<file>.md`. `-F` reads whatever file it names and
 # a review body is public, so the body is a relative .md path that stays in
 # the checkout: never absolute, never `..` -- the token file is neither.
@@ -73,7 +73,7 @@ review_fields_ok() {
         # otherwise pass the pattern below with a body the check never saw.
         case "$1" in -f|-F) ;; *) return 1 ;; esac
         case "$1 ${2:-}" in
-            "-f commit_id="*) [[ $2 =~ ^commit_id=[0-9a-f]{1,40}$ ]] || return 1; commit=$((commit + 1)) ;;
+            "-f commit_id="*) [[ $2 =~ ^commit_id=[0-9a-f]{40}$ ]] || return 1; commit=$((commit + 1)) ;;
             "-f event="*) [[ $2 =~ ^event=(APPROVE|REQUEST_CHANGES|COMMENT)$ ]] || return 1; event=$((event + 1)) ;;
             "-F body="*)
                 [[ $2 =~ ^body=@[A-Za-z0-9_.-][A-Za-z0-9_./-]*\.md$ ]] && [[ ! /${2#body=@}/ =~ /\.\./ ]] ||
@@ -105,7 +105,7 @@ if [ "$allowed" = 0 ]; then
     echo "gh-reviewer: refusing 'gh ${1:-} ${2:-} ...' as the reviewer bot." >&2
     echo "It runs only the review's own calls: api user [--jq …];" >&2
     echo "api repos/{owner}/{repo}/pulls/<N>/reviews -f commit_id=… -f event=… -F body=@….md;" >&2
-    echo "pr view <N>; pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>;" >&2
+    echo "pr view <N>; pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha40>;" >&2
     echo "pr edit <N> --add-label spec-defect|status:needs-human. Use plain gh for anything else." >&2
     exit 4
 fi
@@ -162,16 +162,30 @@ trap 'rm -rf "$own"' EXIT
 
 # gh runs in the repository root, but the review's body path is relative to
 # where the caller stands -- a reviewer may be in a worktree under the root.
-# Kept relative (Windows' gh takes no MSYS path), with the caller's place in
-# front; a caller outside the checkout has no body gh may read.
+# `-F` reads whatever file it names and a review body is public, so the text
+# check above is not enough: a .md symlink can point anywhere. The body must
+# resolve (realpath) to a regular file inside this checkout, and gh is given
+# that resolved file, relative to the root (Windows' gh takes no MSYS path).
+# A caller outside the checkout has no body gh may read.
 if [ "${1:-}" = api ] && [ "${2:-}" != user ]; then
     case "$caller_dir/" in
-        "$root/"*) prefix="${caller_dir#"$root"}"; prefix="${prefix#/}" ;;
+        "$root/"*) ;;
         *) echo "gh-reviewer: run it from inside $root, where the review's body file is." >&2; exit 4 ;;
     esac
     args=()
     for a in "$@"; do
-        case "$a" in body=@*) a="body=@${prefix:+$prefix/}${a#body=@}" ;; esac
+        case "$a" in
+            body=@*)
+                resolved="$(realpath "$caller_dir/${a#body=@}" 2>/dev/null)" || resolved=""
+                case "$resolved" in
+                    "$root/"*) ;;
+                    *) echo "gh-reviewer: the review body ${a#body=@} is not a file inside $root." >&2; exit 4 ;;
+                esac
+                if [ ! -f "$resolved" ]; then
+                    echo "gh-reviewer: the review body ${a#body=@} is not a regular file." >&2; exit 4
+                fi
+                a="body=@${resolved#"$root"/}" ;;
+        esac
         args+=("$a")
     done
     set -- "${args[@]}"

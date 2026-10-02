@@ -25,18 +25,21 @@ WRAPPER = ROOT / ".claude" / "bin" / "gh-reviewer"
 # Not PATH's bash: on Windows that can be WSL's, which cannot read this checkout.
 BASH = p.bash_path()
 
+# A full commit SHA: the wrapper takes nothing shorter (#63).
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
 # Calls the review skill makes (.claude/skills/github-pr-review/SKILL.md).
 ALLOWED = [
     ["api", "user"],
     ["api", "user", "--jq", ".login"],
     ["api", "repos/{owner}/{repo}/pulls/105/reviews",
-     "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
+     "-f", "commit_id=" + SHA, "-f", "event=APPROVE", "-F", "body=@x.md"],
     ["api", "/repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=" + "a" * 40,
      "-f", "event=REQUEST_CHANGES", "-F", "body=@.pipeline-tmp/review-105.md"],
     ["api", "repos/{owner}/{repo}/pulls/105/reviews",
-     "-f", "commit_id=abc", "-f", "event=COMMENT", "-F", "body=@.pipeline-tmp/review-105.md"],
-    ["pr", "merge", "105", "--auto", "--squash", "--delete-branch", "--match-head-commit", "abc"],
-    ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+     "-f", "commit_id=" + SHA, "-f", "event=COMMENT", "-F", "body=@.pipeline-tmp/review-105.md"],
+    ["pr", "merge", "105", "--auto", "--squash", "--delete-branch", "--match-head-commit", SHA],
+    ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "edit", "105", "--add-label", "status:needs-human"],
     ["pr", "edit", "105", "--add-label", "spec-defect"],
     ["pr", "view", "105"],
@@ -45,12 +48,12 @@ ALLOWED = [
 # The bypasses issue #21 found, and their neighbours.
 REFUSED = [
     # A literal owner/repo names another repository (#59): only gh's placeholders.
-    ["api", "repos/o/r/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
-    ["api", "repos/my-org/my.repo/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/o/r/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE", "-F", "body=@x.md"],
+    ["api", "repos/my-org/my.repo/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@x.md"],
-    ["api", "repos/{owner}/other/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/other/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@x.md"],
-    ["api", "repos/other/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/other/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@x.md"],
     # 1. The endpoint was a glob: anything ending in /pulls/<digit>.../reviews.
     ["api", "repos/{owner}/{repo}/contents/.github/workflows/ci.yml?a=/pulls/1/reviews",
@@ -65,38 +68,38 @@ REFUSED = [
     ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "merge_method=squash"],
     ["api", "repos/{owner}/{repo}/pulls/abc/reviews"],
     # The owner and repo segments: no `.`/`..`, no percent-encoding.
-    ["api", "repos/../x/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
-    ["api", "repos/o/./pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
-    ["api", "repos/o%2F..%2Fx/r/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/../x/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE", "-F", "body=@x.md"],
+    ["api", "repos/o/./pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE", "-F", "body=@x.md"],
+    ["api", "repos/o%2F..%2Fx/r/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@x.md"],
     # The review's fields: `-F` reads the file it names, and a review body is public.
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@/Users/x/.config/token.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@../../.config/token.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@.pipeline-tmp/../../token.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@reviewer-token"],
     ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-F", "commit_id=@token.md", "-f", "event=APPROVE",
      "-F", "body=@x.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-F", "event=@token.md",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-F", "event=@token.md",
      "-F", "body=@x.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=DISMISS",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=DISMISS",
      "-F", "body=@x.md"],
     ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=main", "-f", "event=APPROVE",
      "-F", "body=@x.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE"],
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-F", "body=@x.md", "-f", "event=COMMENT"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
      "-f", "body=x"],
     # A flag glued to a value in one word: only the next word would be checked.
     ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-F body=@/Users/x/.config/token", "body=@x.md",
-     "-f", "commit_id=abc", "-f", "event=APPROVE"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f commit_id=zz", "commit_id=abc",
+     "-f", "commit_id=" + SHA, "-f", "event=APPROVE"],
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f commit_id=zz", "commit_id=" + SHA,
      "-f", "event=APPROVE", "-F", "body=@x.md"],
-    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f event=x", "event=APPROVE",
+    ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f event=x", "event=APPROVE",
      "-F", "body=@x.md"],
     ["pr", "view", "105", "-R", "other/repo"],
     ["pr", "view", "105", "--web"],
@@ -105,11 +108,11 @@ REFUSED = [
     ["api", "user", "--jq", ".login", "-X", "PATCH"],
     ["api", "user", "--method", "PATCH"],
     # 3. `pr merge` and `pr edit` with any flags.
-    ["pr", "merge", "105", "--admin", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "merge", "105", "--admin", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "merge", "105", "--squash", "--delete-branch"],
-    ["pr", "merge", "105", "--merge", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "merge", "105", "--merge", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", "main"],
-    ["pr", "merge", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "merge", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "edit", "105", "--base", "other"],
     ["pr", "edit", "105", "--add-label", "status:ready"],
     ["pr", "edit", "105", "--add-label", "spec-defect", "--base", "other"],
@@ -153,6 +156,13 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         # tool hands bash one quoted string, so the agents' calls keep them.
         msys = " ".join(x for x in (os.environ.get("MSYS", ""), "noglob") if x)
         cls.env = {**os.environ, "PIPELINE_REVIEWER_TOKEN": "x", "MSYS": msys}
+        # The review bodies the calls name: real regular files in the checkout,
+        # since the wrapper resolves each one before gh may read it (#63).
+        for body in ("x.md", ".pipeline-tmp/review-105.md",
+                     ".claude/worktrees/review-105/.pipeline-tmp/review-105.md"):
+            path = cls.root / body
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("review\n", encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
@@ -228,11 +238,59 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         second = self.seen(self.call(["pr", "view", "105"]))["GH_CONFIG_DIR"]
         self.assertNotEqual(first, second)
         self.assertFalse(first.endswith("/gh-reviewer"))
-        left = sorted(p.name for p in scratch.iterdir())
+        left = sorted(p.name for p in scratch.iterdir() if p.name.startswith("gh-reviewer"))
         self.assertEqual(left, ["gh-reviewer"], "the per-call directories are removed")
 
-    REVIEW = ["api", "repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=abc",
+    REVIEW = ["api", "repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=" + SHA,
               "-f", "event=APPROVE", "-F", "body=@.pipeline-tmp/review-105.md"]
+
+    def review(self, body=".pipeline-tmp/review-105.md", sha=SHA):
+        return ["api", "repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=" + sha,
+                "-f", "event=APPROVE", "-F", "body=@" + body]
+
+    def test_only_full_shas(self):
+        # #63: nothing shorter or longer than a full 40-character SHA.
+        self.assertEqual(self.run_wrapper(self.review()), 0)
+        for sha in ("abc", SHA[:39], SHA + "8", SHA.upper()):
+            with self.subTest(sha=sha):
+                self.assertEqual(self.run_wrapper(self.review(sha=sha)), 4)
+                self.assertEqual(self.run_wrapper(["pr", "merge", "105", "--squash", "--delete-branch",
+                                                   "--match-head-commit", sha]), 4)
+
+    def test_the_body_must_be_a_regular_file_inside_the_checkout(self):
+        # #63: `-F` reads whatever file it names and a review body is public;
+        # the text check alone lets a .md symlink point anywhere.
+        scratch = self.root / ".pipeline-tmp"
+        (scratch / "a-dir.md").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory() as outside:
+            secret = Path(outside) / "token.md"
+            secret.write_text("secret\n", encoding="utf-8")
+            link = scratch / "link-out.md"
+            try:
+                link.symlink_to(secret)
+            except OSError:
+                link = None        # Windows without symlink rights: covered elsewhere
+            cases = {"missing": "nope.md", "a directory": ".pipeline-tmp/a-dir.md"}
+            if link:
+                cases["a symlink out of the checkout"] = ".pipeline-tmp/link-out.md"
+            for what, body in cases.items():
+                with self.subTest(what):
+                    out = self.call(self.review(body))
+                    self.assertEqual(out.returncode, 4, out.stderr)
+                    self.assertNotIn("args=", out.stdout, "nothing reaches gh")
+        # A symlink inside the checkout is read through to its target. Not on
+        # Windows: Python makes a native symlink there, whose C:\ target MSYS's
+        # realpath does not turn into /c/…, so the wrapper refuses it -- the
+        # safe direction, and no agent writes its report through a symlink.
+        if os.name == "nt":
+            return
+        inside = scratch / "link-in.md"
+        try:
+            inside.symlink_to(scratch / "review-105.md")
+        except OSError:
+            return
+        seen = self.seen(self.call(self.review(".pipeline-tmp/link-in.md")))
+        self.assertIn("body=@.pipeline-tmp/review-105.md", seen["args"], "gh gets the resolved file")
 
     def test_the_body_path_is_relative_to_the_caller(self):
         # gh runs in the repository root; a reviewer in a worktree under it
