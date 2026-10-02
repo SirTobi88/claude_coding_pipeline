@@ -227,7 +227,10 @@ while :; do
     after="${rest#*git push}"
     rest="$after"
     remote=""
-    for tok in $after; do
+    # Only this push's own words: the next push is checked in its own round,
+    # and reading every later word each round made the cost quadratic.
+    seg="${after%%git push*}"
+    for tok in $seg; do
         case "$tok" in
             --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
                 refuse "no force, delete or mirror pushes." \

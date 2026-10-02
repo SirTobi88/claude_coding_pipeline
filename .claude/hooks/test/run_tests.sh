@@ -443,6 +443,15 @@ expect_eq "bash guard: a call after a 20000-line heredoc"       2 \
     "$("$BASH" "$HOOKS/bash_guard.sh" implementer < "$long_payload" >/dev/null 2>&1; echo $?)"
 expect_eq "bash guard: a 20000-line heredoc well inside the hook timeout" yes \
     "$([ $((SECONDS - long_start)) -lt 5 ] && echo yes || echo no)"
+# Each push is read only up to the next one (#68): 400 mentions stay linear.
+push_payload="$WORK/push-payload.json"
+{ printf 'cat > notes <<EOF\n'; i=0; while [ $i -lt 400 ]; do printf 'git push origin agent/1-x\n'; i=$((i + 1)); done
+  printf 'EOF\nls'; } | jq -Rs '{tool_input: {command: .}}' > "$push_payload"
+push_start=$SECONDS
+expect_eq "bash guard: 400 push mentions, then ls"              0 \
+    "$("$BASH" "$HOOKS/bash_guard.sh" < "$push_payload" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: 400 push mentions well inside the hook timeout" yes \
+    "$([ $((SECONDS - push_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\
