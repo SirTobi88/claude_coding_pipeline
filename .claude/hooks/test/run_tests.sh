@@ -491,6 +491,18 @@ expect_eq "bash guard: 2000 push mentions, then ls"             0 \
     "$("$BASH" "$HOOKS/bash_guard.sh" < "$push_payload" >/dev/null 2>&1; echo $?)"
 expect_eq "bash guard: 2000 push mentions well inside the hook timeout" yes \
     "$([ $((SECONDS - push_start)) -lt 5 ] && echo yes || echo no)"
+# A push check that cannot run refuses (#72): an awk first on PATH that fails.
+broken_awk="$WORK/broken-awk"
+mkdir -p "$broken_awk"
+printf '#!/bin/sh\nexit 2\n' > "$broken_awk/awk"
+chmod +x "$broken_awk/awk"
+bguard_broken_awk() {
+    jq -n --arg c "$1" '{tool_input: {command: $c}}' \
+        | PATH="$broken_awk:$PATH" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1
+    echo $?
+}
+expect_eq "bash guard: a push check that cannot run refuses"    2 "$(bguard_broken_awk "git push origin agent/1-x")"
+expect_eq "bash guard: no push, no awk needed"                  0 "$(bguard_broken_awk "git status")"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\
