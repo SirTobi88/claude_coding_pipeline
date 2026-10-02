@@ -105,8 +105,14 @@ esac
 # One spelling to match against: whitespace runs collapsed, gh's -R/--repo
 # option dropped wherever it sits (`gh -R o/r issue edit`), and git's -C <dir>
 # too (`git -C .claude/worktrees/review-5 push` is a `git push`).
+# Separators stand as words of their own (`ls;git push` is `ls ; git push`),
+# while the redirects `>&`, `<&` and `&>` keep their `&`: `2>&1` is not a
+# separator.
 norm="$(printf '%s' "$lines" | tr -s ' \t\n' '   ' \
-        | sed -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
+        | sed -e 's/>&/@R1@/g' -e 's/<&/@R2@/g' -e 's/&>/@R3@/g' \
+              -e 's/&&/ @AA@ /g' -e 's/||/ @OO@ /g' -e 's/;/ ; /g' -e 's/|/ | /g' -e 's/&/ \& /g' \
+              -e 's/@AA@/\&\&/g' -e 's/@OO@/||/g' -e 's/@R1@/>\&/g' -e 's/@R2@/<\&/g' -e 's/@R3@/\&>/g' \
+              -e 's/ -R[ =][^ ]*//g' -e 's/ --repo[ =][^ ]*//g' -e 's/git -C [^ ]*/git/g')"
 
 refuse() {
     {
@@ -254,20 +260,24 @@ case "$norm" in
         for tok in $norm; do
             if [ "$in_push" = 1 ]; then
                 case "$tok" in
-                    "&&"|"||"|";"|"|"|"&") in_push=0; continue ;;
-                    [\;\&\|]*) in_push=0 ;;      # a separator glued to the next word
-                    *)
-                        word="${tok%%[;&|)\`]*}"   # the part before a glued separator
+                    "&&"|"||"|";"|"|"|"&") in_push=0; continue ;;   # norm spaced them out
+                    *">"*|*"<"*) continue ;;     # a redirect, `2>&1` too: not the push's end
+                    *[\)\`])                      # the end of a `$( … )` or backquotes
+                        word="${tok%%[\)\`]*}"
                         push_word "$word"
-                        [ "$word" = "$tok" ] || in_push=0
-                        continue ;;
+                        in_push=0; continue ;;
+                    *) push_word "$tok"; continue ;;
                 esac
             fi
-            # Not in a push: does this word, after any separator, `$(` or
-            # quote in front of it, start one? (`bash -c "git push …"` does.)
+            # Not in a push: does this word start one? Quotes, `(`, `$(` and
+            # backquotes in front are not part of it (`bash -c "git push …"`),
+            # and git may be called by its path or escaped (`/usr/bin/git`,
+            # `\git`).
             bare="${tok//[\"\']/}"
-            lead="${bare%%[!;&|(\`\$]*}"
+            lead="${bare%%[!(\`\$]*}"
             bare="${bare#"$lead"}"
+            bare="${bare##*/}"
+            bare="${bare#\\}"
             if [ "$saw_git" = 1 ] && [ "$bare" = push ]; then
                 in_push=1 remote=""
             fi
