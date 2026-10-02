@@ -819,6 +819,21 @@ class OwnerAnswerTests(unittest.TestCase):
         self.assertIn("comments=2", status["description"])
         self.assertEqual(plan.dispatch, [])
 
+    def test_the_answer_status_is_queued_before_the_labels_come_off(self):
+        # The status records where the counts stood; written after the label
+        # removals, a failed write lost the owner's answer (#88).
+        prs = [pr(105, labels=[p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1"],
+                  reviews=[review("COMMENTED")])]
+        plan = run([], prs)
+        mine = [(i, o) for i, o in enumerate(plan.ops) if o.get("number") == 105]
+        status_at = [i for i, o in mine if o["op"] == "post-status"]
+        removals = [(i, o) for i, o in mine if o["op"] == "remove-label"]
+        self.assertEqual(len(status_at), 1)
+        self.assertEqual(len(removals), 3)
+        for i, o in removals:
+            self.assertLess(status_at[0], i, o)
+            self.assertTrue(o.get("after_status"), o)
+
     def test_after_the_answer_old_comment_reviews_no_longer_lock_the_pr(self):
         # Two comment-only reviews used to re-label the PR every tick, however
         # often the owner took the label off.

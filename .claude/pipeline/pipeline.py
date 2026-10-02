@@ -840,16 +840,20 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             # The owner answered: the PR gets its rounds back, and the reviews
             # that ended without a verdict up to now stop counting.
             comment_only = latest_verdict(pr.get("reviews", []), reviewer, pr.get("headRefOid", ""))[1]
-            for label in sorted(l for l in labels if l in (NEEDS_HUMAN, ANSWERED)
-                                or l.startswith((FIX_ROUND, CONFLICT_ROUND))):
-                plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": label,
-                                 "why": "the owner answered"})
+            # The status first, then the labels: the status is what records
+            # where the counts stood. If it cannot be written, the labels stay
+            # (apply_ops skips the after_status removals) and the next tick
+            # runs this branch again, instead of losing the answer.
             if pr.get("headRefOid"):
-                plan.ops.append({"op": "post-status", "number": n, "sha": pr["headRefOid"],
-                                 "context": ANSWERED_STATUS,
+                plan.ops.append({"op": "post-status", "kind": "pr", "number": n,
+                                 "sha": pr["headRefOid"], "context": ANSWERED_STATUS,
                                  "description": f"comments={comment_only} "
                                                 f"attempts={int(pr.get('reviewAttempts') or 0)}",
                                  "why": "the owner answered"})
+            for label in sorted(l for l in labels if l in (NEEDS_HUMAN, ANSWERED)
+                                or l.startswith((FIX_ROUND, CONFLICT_ROUND))):
+                plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": label,
+                                 "why": "the owner answered", "after_status": True})
             plan.waiting.append(f"{tag}: the owner answered -- it resumes next tick")
             continue
         if NEEDS_HUMAN in labels:
@@ -2212,12 +2216,16 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
     moved skips the comments that would have explained it."""
     done = []
     failed: set[tuple] = set()
+    status_failed: set[tuple] = set()   # targets whose post-status did not happen
     for op in plan.ops:
         kind = op["op"]
         n = op.get("number")
         target = (op.get("kind", "issue"), n)
         if kind == "comment" and target in failed:
             done.append(f"SKIPPED comment {n}: the write it explains did not happen")
+            continue
+        if op.get("after_status") and target in status_failed:
+            done.append(f"SKIPPED {kind} {n}: the answer status was not recorded")
             continue
         try:
             if kind == "set-status":
@@ -2253,9 +2261,13 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
                         f"{op.get('why', '')}".replace("  ", " ").strip())
         except StaleState as e:
             failed.add(target)
+            if kind == "post-status":
+                status_failed.add(target)
             done.append(f"SKIPPED {kind} {n}: {e}")
         except GhError as e:
             failed.add(target)
+            if kind == "post-status":
+                status_failed.add(target)
             done.append(f"FAILED {kind} {n}: {e}")
     return done
 

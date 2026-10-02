@@ -89,6 +89,36 @@ class ApplyOpsTests(unittest.TestCase):
         self.assertTrue(done[1].startswith("SKIPPED comment"))
         self.assertEqual(gh.writes, [])
 
+    def test_a_failed_answer_status_keeps_the_labels(self):
+        # #88: without the status, removing the labels would lose the owner's
+        # answer; kept, the next tick runs the answered branch again. Other
+        # removals -- here PR 106's, and one on 105 without after_status -- go on.
+        gh = FakeGh(prs={105: {p.NEEDS_HUMAN, p.ANSWERED}, 106: {p.NEEDS_HUMAN}}, responses=[
+            (lambda a: a[0] == "api" and "/statuses/" in a[1], p.GhError("HTTP 403: no statuses right"))])
+        plan = p.Plan(ops=[
+            {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
+             "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 106, "label": p.NEEDS_HUMAN},
+        ])
+        done = p.apply_ops(gh, plan, lint_fn=None)
+        self.assertTrue(done[0].startswith("FAILED post-status"), done)
+        self.assertEqual(done[1:3], ["SKIPPED remove-label 105: the answer status was not recorded"] * 2)
+        self.assertEqual(gh.labels_of[("pr", 105)], {p.NEEDS_HUMAN, p.ANSWERED})
+        self.assertEqual(gh.labels_of[("pr", 106)], set())
+
+    def test_a_written_answer_status_lets_the_labels_come_off(self):
+        gh = FakeGh(prs={105: {p.NEEDS_HUMAN, p.ANSWERED}})
+        plan = p.Plan(ops=[
+            {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
+             "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+        ])
+        p.apply_ops(gh, plan, lint_fn=None)
+        self.assertEqual(gh.labels_of[("pr", 105)], set())
+
     def test_a_failed_label_skips_its_comment_but_not_other_items(self):
         gh = FakeGh(prs={105: set(), 106: set()}, responses=[
             (lambda a: a[:3] == ["pr", "edit", "105"], p.GhError("label not found"))])
