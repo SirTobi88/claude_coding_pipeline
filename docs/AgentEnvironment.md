@@ -99,7 +99,9 @@ asked about. What that allows, and why:
   (NEEDS_HUMAN, naming the command) when the refused command is one the
   review needs: a done-check CI does not cover, or a step of its own such as
   reading a CI log. Nothing is approved that
-  a step of the review could not check.
+  a step of the review could not check. A command refused after the verdict
+  is posted is not a new verdict: the reviewer names it in its report, and
+  the tick lists it under *Needs you*.
 - **Edits** — inside `.claude/worktrees/` (every implementer and reviewer works
   in one) and `.pipeline-tmp/`, nowhere else.
 - **Scratch files** — PR bodies, issue bodies and review reports go to

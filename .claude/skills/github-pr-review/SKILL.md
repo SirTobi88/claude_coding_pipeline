@@ -79,10 +79,13 @@ names `<sha>`, write the literal value.
 - Any other command the review needs that is refused even in plain form —
   `gh run view <run-id> --log` for § 3's named test, `.claude/bin/pipeline checks`,
   a `.claude/bin/gh-reviewer` write — is not a defect of the PR either. Judge
-  the rest; the verdict is NEEDS_HUMAN (§ 9), naming the command:
-  nothing is approved that a step of the review could not check. If the
-  refused command is the one that posts the verdict, nothing can be posted:
-  release (§ 10) and name the command in your report.
+  the rest, and unless something else already asks for changes, the verdict
+  is NEEDS_HUMAN (§ 9), naming the command: nothing is approved that a step
+  of the review could not check. If the refused command is the one that posts
+  the verdict, nothing can be posted: release (§ 10) and name the command in
+  your report. A command refused after the verdict is posted — the label
+  edit after a COMMENT review, enabling auto-merge after an APPROVE — is not
+  a new verdict: post nothing more, and name the command in your report.
 
 ## 1. Worktree
 
@@ -264,7 +267,7 @@ the literal 40-character value, not a variable:
 |---|---|---|
 | **APPROVE** — § 0 found no open blocker, § 2–6 clean, code review found nothing blocking, every § 8a fix is green in CI | `APPROVE` | enable auto-merge (below) |
 | **REQUEST_CHANGES** — any § 8b or § 8d finding | `REQUEST_CHANGES` | nothing; the pipeline dispatches a fix pass |
-| **NEEDS_HUMAN** — § 6 decision, a DoD line only the owner can judge, or a command § 0 found refused | `COMMENT` | `.claude/bin/gh-reviewer pr edit <N> --add-label status:needs-human` |
+| **NEEDS_HUMAN** — § 6 decision, a DoD line only the owner can judge, or a command § 0 found refused when no § 8b or § 8d finding asks for changes | `COMMENT` | `.claude/bin/gh-reviewer pr edit <N> --add-label status:needs-human` |
 
 NEEDS_HUMAN's report ends with **one precise question** and the options you see
 — something the owner can answer in a line — and how to answer: a comment on
