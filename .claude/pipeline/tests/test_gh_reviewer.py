@@ -42,7 +42,6 @@ ALLOWED = [
     ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "edit", "105", "--add-label", "status:needs-human"],
     ["pr", "edit", "105", "--add-label", "spec-defect"],
-    ["pr", "view", "105"],
 ]
 
 # The bypasses issue #21 found, and their neighbours.
@@ -101,6 +100,7 @@ REFUSED = [
      "-f", "event=APPROVE", "-F", "body=@x.md"],
     ["api", "repos/{owner}/{repo}/pulls/1/reviews", "-f", "commit_id=" + SHA, "-f event=x", "event=APPROVE",
      "-F", "body=@x.md"],
+    ["pr", "view", "105"],                      # the skill reads with plain gh (#73)
     ["pr", "view", "105", "-R", "other/repo"],
     ["pr", "view", "105", "--web"],
     # 2. `api user` with any method and any fields.
@@ -148,7 +148,10 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         stubdir = cls.root / ".stub"
         stubdir.mkdir()
         stub = stubdir / "gh"
-        stub.write_text('#!/bin/sh\necho "cwd=$(pwd)"\necho "args=$*"\nenv\n', encoding="utf-8")
+        stub.write_text('#!/bin/sh\necho "cwd=$(pwd)"\necho "args=$*"\n'
+                        'for a in "$@"; do case "$a" in body=@*) '
+                        'echo "body-file=${a#body=@}"; echo "body-content=$(cat "${a#body=@}")" ;; esac; done\n'
+                        'env\n', encoding="utf-8")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
         # MSYS=noglob: Python starts bash.exe with `repos/{owner}/{repo}/…`
         # unquoted, and Git Bash's runtime would brace-expand it to
@@ -162,7 +165,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
                      ".claude/worktrees/review-105/.pipeline-tmp/review-105.md"):
             path = cls.root / body
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("review\n", encoding="utf-8")
+            path.write_text("report " + body + "\n", encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
@@ -216,7 +219,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
             fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
             env = {**self.env, "PATH": decoy + os.pathsep + os.environ.get("PATH", ""),
                    **{n: "marker-" + n for n in names}}
-            out = self.call(["pr", "view", "105"], env)
+            out = self.call(["api", "user"], env)
         seen = self.seen(out)
         self.assertNotIn("DECOY", out.stdout)
         self.assertNotIn("marker-", out.stdout)
@@ -234,8 +237,8 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         planted = scratch / "gh-reviewer"
         planted.mkdir(exist_ok=True)
         (planted / "config.yml").write_text("pager: cat\n", encoding="utf-8")
-        first = self.seen(self.call(["pr", "view", "105"]))["GH_CONFIG_DIR"]
-        second = self.seen(self.call(["pr", "view", "105"]))["GH_CONFIG_DIR"]
+        first = self.seen(self.call(["api", "user"]))["GH_CONFIG_DIR"]
+        second = self.seen(self.call(["api", "user"]))["GH_CONFIG_DIR"]
         self.assertNotEqual(first, second)
         self.assertFalse(first.endswith("/gh-reviewer"))
         left = sorted(p.name for p in scratch.iterdir() if p.name.startswith("gh-reviewer"))
@@ -290,17 +293,45 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         except OSError:
             return
         seen = self.seen(self.call(self.review(".pipeline-tmp/link-in.md")))
-        self.assertIn("body=@.pipeline-tmp/review-105.md", seen["args"], "gh gets the resolved file")
+        self.assertEqual(seen["body-content"], "report .pipeline-tmp/review-105.md",
+                         "gh reads the resolved file")
 
     def test_the_body_path_is_relative_to_the_caller(self):
         # gh runs in the repository root; a reviewer in a worktree under it
         # still names its own report.
         sub = self.root / ".claude" / "worktrees" / "review-105"
         sub.mkdir(parents=True, exist_ok=True)
-        from_sub = self.seen(self.call(self.REVIEW, cwd=sub))["args"]
-        self.assertIn("body=@.claude/worktrees/review-105/.pipeline-tmp/review-105.md", from_sub)
-        from_root = self.seen(self.call(self.REVIEW))["args"]
-        self.assertIn("body=@.pipeline-tmp/review-105.md", from_root)
+        from_sub = self.seen(self.call(self.REVIEW, cwd=sub))["body-content"]
+        self.assertEqual(from_sub, "report .claude/worktrees/review-105/.pipeline-tmp/review-105.md")
+        from_root = self.seen(self.call(self.REVIEW))["body-content"]
+        self.assertEqual(from_root, "report .pipeline-tmp/review-105.md")
+
+    def test_gh_reads_a_private_copy_of_the_body(self):
+        # #73: gh never opens the caller's path again, so a file swapped after
+        # the check is not what gets posted. The copy lives in the per-call
+        # directory and goes with it.
+        seen = self.seen(self.call(self.REVIEW))
+        self.assertRegex(seen["body-file"], r"^\.pipeline-tmp/gh-reviewer\.[^/]+/body\.md$")
+        self.assertEqual(seen["body-content"], "report .pipeline-tmp/review-105.md")
+        self.assertFalse((self.root / seen["body-file"]).exists(), "the copy is removed after the call")
+
+    def test_a_md_link_to_a_non_md_file_is_refused(self):
+        # #73: the name was checked as written; the file that would be posted
+        # must be a .md file itself (not .git/config behind a .md link).
+        if os.name == "nt":
+            self.skipTest("Windows symlinks resolve outside MSYS paths; refused there anyway")
+        config = self.root / ".git-config"
+        config.write_text("[core]\n", encoding="utf-8")
+        link = self.root / ".pipeline-tmp" / "cfg.md"
+        link.parent.mkdir(exist_ok=True)
+        try:
+            link.symlink_to(config)
+        except OSError:
+            self.skipTest("cannot create a symlink here")
+        out = self.call(self.review(".pipeline-tmp/cfg.md"))
+        self.assertEqual(out.returncode, 4, out.stderr)
+        self.assertIn("not .md", out.stderr, "refused by the .md check, not another one")
+        self.assertNotIn("args=", out.stdout, "nothing reaches gh")
 
     def test_a_review_from_outside_the_checkout_is_refused(self):
         with tempfile.TemporaryDirectory() as elsewhere:
@@ -311,13 +342,13 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         text = failing.read_text(encoding="utf-8")
         try:
             failing.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
-            self.assertEqual(self.run_wrapper(["pr", "view", "105"]), 7)
+            self.assertEqual(self.run_wrapper(["api", "user"]), 7)
         finally:
             failing.write_text(text, encoding="utf-8")
 
     def test_the_network_setup_passes_through(self):
         env = {**self.env, "HTTPS_PROXY": "http://proxy.example:3128", "SSL_CERT_FILE": "/etc/ca.pem"}
-        seen = self.seen(self.call(["pr", "view", "105"], env))
+        seen = self.seen(self.call(["api", "user"], env))
         self.assertEqual(seen.get("HTTPS_PROXY"), "http://proxy.example:3128")
         self.assertEqual(seen.get("SSL_CERT_FILE"), "/etc/ca.pem")
 
@@ -326,7 +357,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         # in it. `env -i GH_TOKEN=…` would put the token in env's arguments,
         # which any process listing shows.
         self.assertNotRegex(WRAPPER.read_text(encoding="utf-8"), r"(?m)^[^#]*\benv\s+-i\b")
-        self.assertEqual(self.seen(self.call(["pr", "view", "105"]))["GH_TOKEN"], "x")
+        self.assertEqual(self.seen(self.call(["api", "user"]))["GH_TOKEN"], "x")
 
 
 if __name__ == "__main__":

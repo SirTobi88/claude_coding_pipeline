@@ -93,8 +93,6 @@ case "${1:-} ${2:-}" in
         { [ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--jq" ]; }; } && allowed=1 ;;
     "api "*)
         [[ ${2#/} =~ $review_endpoint ]] && review_fields_ok "${@:3}" && allowed=1 ;;
-    "pr view")
-        [ $# -eq 3 ] && [[ $3 =~ ^[0-9]+$ ]] && allowed=1 ;;
     "pr merge")
         [[ ${3:-} =~ ^[0-9]+$ ]] && merge_flags_ok "${@:4}" && allowed=1 ;;
     "pr edit")
@@ -105,7 +103,7 @@ if [ "$allowed" = 0 ]; then
     echo "gh-reviewer: refusing 'gh ${1:-} ${2:-} ...' as the reviewer bot." >&2
     echo "It runs only the review's own calls: api user [--jq …];" >&2
     echo "api repos/{owner}/{repo}/pulls/<N>/reviews -f commit_id=… -f event=… -F body=@….md;" >&2
-    echo "pr view <N>; pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha40>;" >&2
+    echo "pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha40>;" >&2
     echo "pr edit <N> --add-label spec-defect|status:needs-human. Use plain gh for anything else." >&2
     exit 4
 fi
@@ -164,14 +162,19 @@ trap 'rm -rf "$own"' EXIT
 # where the caller stands -- a reviewer may be in a worktree under the root.
 # `-F` reads whatever file it names and a review body is public, so the text
 # check above is not enough: a .md symlink can point anywhere. The body must
-# resolve (realpath) to a regular file inside this checkout, and gh is given
-# that resolved file, relative to the root (Windows' gh takes no MSYS path).
+# resolve (realpath) to a regular .md file inside this checkout, and gh is
+# given a private copy of it in the per-call directory, relative to the root
+# (Windows' gh takes no MSYS path).
 # A caller outside the checkout has no body gh may read.
 if [ "${1:-}" = api ] && [ "${2:-}" != user ]; then
     case "$caller_dir/" in
         "$root/"*) ;;
         *) echo "gh-reviewer: run it from inside $root, where the review's body file is." >&2; exit 4 ;;
     esac
+    if ! command -v realpath >/dev/null; then
+        echo "gh-reviewer: realpath is not installed; it is needed to check the review body." >&2
+        exit 3
+    fi
     args=()
     for a in "$@"; do
         case "$a" in
@@ -184,7 +187,21 @@ if [ "${1:-}" = api ] && [ "${2:-}" != user ]; then
                 if [ ! -f "$resolved" ]; then
                     echo "gh-reviewer: the review body ${a#body=@} is not a regular file." >&2; exit 4
                 fi
-                a="body=@${resolved#"$root"/}" ;;
+                # The name was checked as written; a .md link may lead to
+                # .git/config. What is posted must be a .md file itself.
+                case "$resolved" in
+                    *.md) ;;
+                    *) echo "gh-reviewer: the review body ${a#body=@} resolves to a file that is not .md." >&2; exit 4 ;;
+                esac
+                # gh reads a private copy, never the caller's path again, so
+                # a file swapped after this copy is not what gets posted. A
+                # swap between the checks above and the copy still is: `cp`
+                # opens the path once more. Anything that fast already runs
+                # as the user who can read the token -- a guard rail, not a
+                # boundary.
+                cp "$resolved" "$own/body.md" ||
+                    { echo "gh-reviewer: cannot copy the review body." >&2; exit 3; }
+                a="body=@${own#"$root"/}/body.md" ;;
         esac
         args+=("$a")
     done
