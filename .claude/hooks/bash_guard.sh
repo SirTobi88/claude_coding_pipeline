@@ -229,9 +229,9 @@ esac
 # the words after them. So the same verdict is worked out in two linear
 # passes: from the right, each word records what reading from it would meet
 # up to the next separator; from the left, each `git push` looks that up.
-# The verdicts -- refused or not -- are the per-push loop's; only the cost
-# changes. When one push breaks two rules, the rule a refusal names may be the
-# other one.
+# Whenever awk runs, the verdicts -- refused or not -- are the per-push loop's;
+# only the cost changes. When one push breaks two rules, the rule a refusal
+# names may be the other one. When awk fails, the push is refused.
 push_refuse() {
     case "$1" in
         F) refuse "no force, delete or mirror pushes." \
@@ -242,9 +242,11 @@ agents' and reviewers' work. Push new commits instead." ;;
         A) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-        E) refuse "the push check could not run (awk failed); the command is refused rather than let through unchecked." \
-"awk is part of every supported setup (docs/AgentEnvironment.md). Check that
-it is installed and on PATH, then run the command again." ;;
+        # E, and anything else awk might print: a verdict this guard does not
+        # know is not a pass.
+        E|*) refuse "the push check could not run (awk failed); the command is refused rather than let through unchecked." \
+"The guard checks pushes with awk. Check that awk is installed and on PATH,
+then run the command again." ;;
     esac
 }
 # One awk pass, run only when the text holds `git push`: bash 3.2's arrays

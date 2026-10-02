@@ -496,13 +496,21 @@ broken_awk="$WORK/broken-awk"
 mkdir -p "$broken_awk"
 printf '#!/bin/sh\nexit 2\n' > "$broken_awk/awk"
 chmod +x "$broken_awk/awk"
-bguard_broken_awk() {
+bguard_broken_awk() {  # <command> [awk dir] -> exit code, and could-not-run when that refusal
     jq -n --arg c "$1" '{tool_input: {command: $c}}' \
-        | PATH="$broken_awk:$PATH" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1
-    echo $?
+        | PATH="${2:-$broken_awk}:$PATH" "$BASH" "$HOOKS/bash_guard.sh" 2>"$WORK/broken-awk.err" >/dev/null
+    rc=$?
+    if grep -q "the push check could not run" "$WORK/broken-awk.err"; then echo "$rc could-not-run"; else echo "$rc"; fi
 }
-expect_eq "bash guard: a push check that cannot run refuses"    2 "$(bguard_broken_awk "git push origin agent/1-x")"
-expect_eq "bash guard: no push, no awk needed"                  0 "$(bguard_broken_awk "git status")"
+could_not_run="2 could-not-run"
+expect_eq "bash guard: a push check that cannot run refuses"    "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x")"
+expect_eq "bash guard: no push, no awk needed"                  "0" "$(bguard_broken_awk "git status")"
+# An awk that exits 0 but prints a verdict the guard does not know refuses too.
+odd_awk="$WORK/odd-awk"
+mkdir -p "$odd_awk"
+printf '#!/bin/sh\necho Z\n' > "$odd_awk/awk"
+chmod +x "$odd_awk/awk"
+expect_eq "bash guard: an unknown verdict from awk refuses"     "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x" "$odd_awk")"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\
