@@ -31,9 +31,9 @@ ALLOWED = [
     ["api", "user", "--jq", ".login"],
     ["api", "repos/{owner}/{repo}/pulls/105/reviews",
      "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
-    ["api", "/repos/o/r/pulls/105/reviews", "-f", "commit_id=" + "a" * 40,
+    ["api", "/repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=" + "a" * 40,
      "-f", "event=REQUEST_CHANGES", "-F", "body=@.pipeline-tmp/review-105.md"],
-    ["api", "repos/my-org/my.repo/pulls/105/reviews",
+    ["api", "repos/{owner}/{repo}/pulls/105/reviews",
      "-f", "commit_id=abc", "-f", "event=COMMENT", "-F", "body=@.pipeline-tmp/review-105.md"],
     ["pr", "merge", "105", "--auto", "--squash", "--delete-branch", "--match-head-commit", "abc"],
     ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", "abc"],
@@ -44,6 +44,14 @@ ALLOWED = [
 
 # The bypasses issue #21 found, and their neighbours.
 REFUSED = [
+    # A literal owner/repo names another repository (#59): only gh's placeholders.
+    ["api", "repos/o/r/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE", "-F", "body=@x.md"],
+    ["api", "repos/my-org/my.repo/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+     "-F", "body=@x.md"],
+    ["api", "repos/{owner}/other/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+     "-F", "body=@x.md"],
+    ["api", "repos/other/{repo}/pulls/1/reviews", "-f", "commit_id=abc", "-f", "event=APPROVE",
+     "-F", "body=@x.md"],
     # 1. The endpoint was a glob: anything ending in /pulls/<digit>.../reviews.
     ["api", "repos/o/r/contents/.github/workflows/ci.yml?a=/pulls/1/reviews",
      "-X", "PUT", "-f", "message=x", "-f", "content=eA==", "-f", "branch=main"],
@@ -144,6 +152,27 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         for args in REFUSED:
             with self.subTest(args=" ".join(args)):
                 self.assertEqual(self.run_wrapper(args), 4)
+
+    def test_the_callers_environment_does_not_reach_gh(self):
+        # gh reads these from the environment, where no argument check sees
+        # them: GH_REPO alone sends `pr merge` to another repository.
+        names = ["GH_REPO", "GH_HOST", "GH_CONFIG_DIR", "GH_PAGER", "PAGER", "GH_BROWSER",
+                 "BROWSER", "SSL_CERT_FILE", "SSL_CERT_DIR"]
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "gh"
+            stub.write_text("#!/bin/sh\nenv\n", encoding="utf-8")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            env = {**os.environ, "PATH": d + os.pathsep + os.environ.get("PATH", ""),
+                   "PIPELINE_REVIEWER_TOKEN": "x", **{n: "marker-" + n for n in names}}
+            out = subprocess.run([BASH, str(WRAPPER), "pr", "view", "105"], env=env,
+                                 capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        seen = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+        for name in names:
+            with self.subTest(name=name):
+                self.assertNotIn(name, seen)
+        self.assertNotIn("marker-", out.stdout)
+        self.assertEqual(seen.get("GH_TOKEN"), "x")
 
 
 if __name__ == "__main__":

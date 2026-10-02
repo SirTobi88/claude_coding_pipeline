@@ -27,7 +27,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # prefix or a glob: in a bash `case` pattern `*` also matches `/` and `?`, and
 # an endpoint that only ended in /pulls/<N>/reviews once let any API call
 # through.
-review_endpoint='^repos/(\{owner\}|[A-Za-z0-9_.-]+)/(\{repo\}|[A-Za-z0-9_.-]+)/pulls/[0-9]+/reviews$'
+# Only gh's own placeholders, which gh fills from this checkout: a literal
+# owner/repo could name any repository the bot can reach.
+review_endpoint='^repos/\{owner\}/\{repo\}/pulls/[0-9]+/reviews$'
 
 # `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
 merge_flags_ok() {
@@ -113,4 +115,8 @@ if [ -z "$token" ]; then
     echo "gh-reviewer: the reviewer token is empty." >&2
     exit 3
 fi
+# gh reads these from the environment, where no argument check sees them:
+# GH_REPO and GH_HOST point a call at another repository or host, the others
+# run another program or trust another certificate.
+unset GH_REPO GH_HOST GH_CONFIG_DIR GH_PAGER PAGER GH_BROWSER BROWSER SSL_CERT_FILE SSL_CERT_DIR
 GH_TOKEN="$token" exec gh "$@"
