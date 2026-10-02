@@ -21,15 +21,23 @@
 # .claude/pipeline/config.json. It is handed to gh through the environment and
 # never printed, passed on a command line, or written anywhere.
 set -u
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The script's own directory, found in bash: `dirname` would be a program the
+# caller's PATH chooses. From here on only the fixed PATH below is used.
+case "${BASH_SOURCE[0]}" in */*) here="${BASH_SOURCE[0]%/*}" ;; *) here=. ;; esac
+here="$(cd "$here" && pwd)"
+caller_path="$PATH"
+safe_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+safe_path="$safe_path:/mingw64/bin:/c/Program Files/GitHub CLI:/c/Program Files/Git/cmd"
+export PATH="$safe_path"
 
 # Each call is matched whole -- command, target and every flag -- never by a
 # prefix or a glob: in a bash `case` pattern `*` also matches `/` and `?`, and
 # an endpoint that only ended in /pulls/<N>/reviews once let any API call
 # through.
 # Only gh's own placeholders, which gh fills from this checkout: a literal
-# owner/repo could name any repository the bot can reach.
-review_endpoint='^repos/\{owner\}/\{repo\}/pulls/[0-9]+/reviews$'
+# owner/repo could name any repository the bot can reach. `[{]`, not `\{`:
+# Git Bash's regex library reads a bare `\{` differently.
+review_endpoint='^repos/[{]owner[}]/[{]repo[}]/pulls/[0-9]+/reviews$'
 
 # `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
 merge_flags_ok() {
@@ -100,7 +108,10 @@ fi
 if [ -n "${PIPELINE_REVIEWER_TOKEN:-}" ]; then
     token="$PIPELINE_REVIEWER_TOKEN"
 else
-    file="$("$here/pipeline" config reviewer_token_file 2>/dev/null)" || file=""
+    # The shim needs Python, which on Windows lives outside the fixed PATH. At
+    # worst a PATH of the caller's points it at another file: then gh gets the
+    # wrong token, and the bot's never leaves.
+    file="$(PATH="$caller_path" "$here/pipeline" config reviewer_token_file 2>/dev/null)" || file=""
     if [ -z "$file" ] || [ ! -r "$file" ]; then
         echo "gh-reviewer: no reviewer token at ${file:-<unknown>}." >&2
         echo "Setup: docs/Pipeline.md § Setup." >&2
@@ -121,23 +132,28 @@ fi
 # GH_CONFIG_DIR pick a config whose pager or socket would see the token; PATH
 # picks which `gh` gets it. So:
 #   - PATH is fixed, and gh is found on it -- not on the caller's;
-#   - gh's config and HOME are an empty directory of the checkout's own;
-#   - the working directory is the repository root, whose origin remote is
-#     what `{owner}/{repo}` and `pr <N>` resolve to;
+#   - gh's config and HOME are a directory made fresh for this one call and
+#     removed after it: a config left in a shared one would be read;
+#   - the working directory is the repository root, whose remotes (origin,
+#     or an upstream gh prefers) are what `{owner}/{repo}` and `pr <N>`
+#     resolve to -- changing those takes a write to .git/config, not a
+#     variable;
 #   - only the network setup passes through (proxies, certificates), and on
-#     Windows what a program needs to start at all.
+#     Windows what a program needs to start at all. Windows keeps a few
+#     names bash cannot unset (PROGRAMFILES(X86), COMMONPROGRAMFILES(X86)),
+#     and MSYS sets MSYSTEM again; none of them points gh anywhere.
 # Bash reads BASH_ENV before this script runs, so that one stays the
 # caller's: a guard rail, not a boundary (docs/Pipeline.md § Merging).
-safe_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-safe_path="$safe_path:/mingw64/bin:/c/Program Files/GitHub CLI:/c/Program Files/Git/cmd"
-gh_bin="$(PATH="$safe_path" command -v gh)"
+gh_bin="$(command -v gh)"
 if [ -z "$gh_bin" ]; then
     echo "gh-reviewer: gh is not installed in a standard place ($safe_path)." >&2
     exit 3
 fi
 root="$(cd "$here/../.." && pwd)"
-own="$root/.pipeline-tmp/gh-reviewer"
-mkdir -p "$own" || { echo "gh-reviewer: cannot create $own" >&2; exit 3; }
+mkdir -p "$root/.pipeline-tmp" &&
+    own="$(mktemp -d "$root/.pipeline-tmp/gh-reviewer.XXXXXX")" ||
+    { echo "gh-reviewer: cannot create a config directory under $root/.pipeline-tmp" >&2; exit 3; }
+trap 'rm -rf "$own"' EXIT
 keep=()
 for name in HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy \
             SSL_CERT_FILE SSL_CERT_DIR SYSTEMROOT SystemRoot WINDIR windir COMSPEC ComSpec \
@@ -150,4 +166,6 @@ cd "$root" || exit 3
 for name in $(compgen -e); do unset "$name" 2>/dev/null; done
 for kv in ${keep[@]+"${keep[@]}"}; do export "$kv"; done
 export PATH="$safe_path" HOME="$own" GH_CONFIG_DIR="$own" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1
-GH_TOKEN="$token" GH_ENTERPRISE_TOKEN="$token" exec "$gh_bin" "$@"
+# Not exec: the fresh config directory is removed when gh is done.
+GH_TOKEN="$token" GH_ENTERPRISE_TOKEN="$token" "$gh_bin" "$@"
+exit $?

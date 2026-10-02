@@ -177,7 +177,9 @@ class GhReviewerAllowlistTests(unittest.TestCase):
                "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
                "https_proxy", "http_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
                "SYSTEMROOT", "SystemRoot", "WINDIR", "windir", "COMSPEC", "ComSpec", "PATHEXT",
-               "TEMP", "TMP", "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_"}
+               "TEMP", "TMP", "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_",
+               # Windows: bash cannot unset these two, and MSYS sets MSYSTEM again.
+               "PROGRAMFILES(X86)", "COMMONPROGRAMFILES(X86)", "MSYSTEM"}
 
     def seen(self, out):
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -204,8 +206,32 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         self.assertEqual(set(seen) - self.GH_SEES - {"cwd"}, set())
         self.assertEqual(seen["GH_TOKEN"], "x")
         self.assertTrue(seen["cwd"].endswith("/repo"), seen["cwd"])
-        self.assertTrue(seen["GH_CONFIG_DIR"].endswith("/repo/.pipeline-tmp/gh-reviewer"))
+        self.assertRegex(seen["GH_CONFIG_DIR"], r"/repo/\.pipeline-tmp/gh-reviewer\.[^/]+$")
         self.assertEqual(seen["HOME"], seen["GH_CONFIG_DIR"])
+
+    def test_each_call_gets_a_fresh_config_dir_and_removes_it(self):
+        # A config.yml left in a shared directory would be read by gh: its
+        # pager or http_unix_socket would see the token.
+        scratch = self.root / ".pipeline-tmp"
+        scratch.mkdir(exist_ok=True)
+        planted = scratch / "gh-reviewer"
+        planted.mkdir(exist_ok=True)
+        (planted / "config.yml").write_text("pager: cat\n", encoding="utf-8")
+        first = self.seen(self.call(["pr", "view", "105"]))["GH_CONFIG_DIR"]
+        second = self.seen(self.call(["pr", "view", "105"]))["GH_CONFIG_DIR"]
+        self.assertNotEqual(first, second)
+        self.assertFalse(first.endswith("/gh-reviewer"))
+        left = sorted(p.name for p in scratch.iterdir())
+        self.assertEqual(left, ["gh-reviewer"], "the per-call directories are removed")
+
+    def test_gh_s_exit_code_comes_through(self):
+        failing = self.root / ".stub" / "gh"
+        text = failing.read_text(encoding="utf-8")
+        try:
+            failing.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+            self.assertEqual(self.run_wrapper(["pr", "view", "105"]), 7)
+        finally:
+            failing.write_text(text, encoding="utf-8")
 
     def test_the_network_setup_passes_through(self):
         env = {**self.env, "HTTPS_PROXY": "http://proxy.example:3128", "SSL_CERT_FILE": "/etc/ca.pem"}
