@@ -147,7 +147,12 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         stub = stubdir / "gh"
         stub.write_text('#!/bin/sh\necho "cwd=$(pwd)"\necho "args=$*"\nenv\n', encoding="utf-8")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-        cls.env = {**os.environ, "PIPELINE_REVIEWER_TOKEN": "x"}
+        # MSYS=noglob: Python starts bash.exe with `repos/{owner}/{repo}/…`
+        # unquoted, and Git Bash's runtime would brace-expand it to
+        # `repos/owner/repo/…` before the wrapper sees it. Claude Code's Bash
+        # tool hands bash one quoted string, so the agents' calls keep them.
+        msys = " ".join(x for x in (os.environ.get("MSYS", ""), "noglob") if x)
+        cls.env = {**os.environ, "PIPELINE_REVIEWER_TOKEN": "x", "MSYS": msys}
 
     @classmethod
     def tearDownClass(cls):

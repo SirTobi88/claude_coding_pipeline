@@ -38,8 +38,10 @@ export PATH="$safe_path"
 # an endpoint that only ended in /pulls/<N>/reviews once let any API call
 # through.
 # Only gh's own placeholders, which gh fills from this checkout: a literal
-# owner/repo could name any repository the bot can reach. `[{]`, not `\{`:
-# Git Bash's regex library reads a bare `\{` differently.
+# owner/repo could name any repository the bot can reach. (`[{]` is a literal
+# brace in every regex flavour. On Windows a native program that starts
+# bash.exe with an unquoted `{owner}` has it brace-expanded by the MSYS
+# runtime first; that call is refused, and so fails closed.)
 review_endpoint='^repos/[{]owner[}]/[{]repo[}]/pulls/[0-9]+/reviews$'
 
 # `pr merge <N> [--auto] --squash --delete-branch --match-head-commit <sha>`
