@@ -1209,6 +1209,40 @@ class PreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(self.check(Path(d)), [])
 
+    def test_missing_text_tools_are_reported(self):
+        # Without them the bash guard refuses every Bash command (#78), so the
+        # tick should say so (#85).
+        import tempfile
+        from types import SimpleNamespace
+        git = self.fake_git()
+
+        def run(args, **kw):
+            if len(args) > 2 and args[1] == "-c":      # the guard's bash, asked for GUARD_TOOLS
+                return SimpleNamespace(returncode=0, stdout="tr\ngrep\n")
+            return git(args, **kw)
+        with tempfile.TemporaryDirectory() as d:
+            problems = p.preflight(Path(d), run=run, which=lambda t: "/usr/bin/" + t,
+                                   bash=lambda: "/bin/bash")
+        named = [x for x in problems if "bash guard refuses" in x]
+        self.assertEqual(len(named), 1, problems)
+        self.assertTrue(named[0].startswith("tr, grep not found"), named[0])
+        for present in ("awk", "sed"):
+            self.assertNotIn(present, named[0].split(":")[0])
+
+    def test_the_text_tools_are_asked_of_the_guards_bash(self):
+        # A real lookup through this machine's bash: all four are there.
+        self.assertEqual(p.guard_tools_missing(), [])
+
+    def test_a_bash_that_cannot_answer_is_not_read_as_all_found(self):
+        # It prints nothing; that must not mean "all four found" (review of #90).
+        from types import SimpleNamespace
+        failed = lambda *a, **k: SimpleNamespace(returncode=1, stdout="")
+        self.assertIsNone(p.guard_tools_missing(run=failed, bash=lambda: "/bin/bash"))
+
+        def hangs(*a, **k):
+            raise p.subprocess.TimeoutExpired("bash", 30)
+        self.assertIsNone(p.guard_tools_missing(run=hangs, bash=lambda: "/bin/bash"))
+
     def test_local_settings_dirty_tree_and_wrong_branch_are_reported(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

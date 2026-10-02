@@ -307,6 +307,25 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["CI readable"][0], "fail")
         self.assertIn("Actions", report["CI readable"][1])
 
+    def test_a_missing_text_tool_fails_the_report(self):
+        # Without awk the bash guard refuses every Bash command (#78); doctor
+        # must not show 0 failing then (#85).
+        # The tools are looked up by the guard's own bash, not Python's PATH:
+        # on Windows they live in Git's usr/bin, which only Git Bash sees.
+        gh = FakeGh()
+        gh.reviewer_login = lambda: None
+
+        def fake_run(args, **_):
+            if len(args) > 2 and args[1] == "-c":      # the guard's bash, asked for GUARD_TOOLS
+                self.assertEqual(tuple(args[4:]), p.GUARD_TOOLS)
+                return SimpleNamespace(returncode=0, stdout="awk\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="github_pat_x\n", stderr="")
+        report = {name: (level, detail) for level, name, detail in
+                  p.doctor_report(gh, p.REPO_ROOT, run=fake_run, which=lambda t: "/usr/bin/" + t)}
+        self.assertEqual(report["tool: awk"][0], "fail")
+        for tool in ("tr", "sed", "grep"):
+            self.assertEqual(report[f"tool: {tool}"][0], "ok", tool)
+
 
 class ProtectionStateTests(unittest.TestCase):
     def test_states(self):
