@@ -443,14 +443,26 @@ expect_eq "bash guard: a call after a 20000-line heredoc"       2 \
     "$("$BASH" "$HOOKS/bash_guard.sh" implementer < "$long_payload" >/dev/null 2>&1; echo $?)"
 expect_eq "bash guard: a 20000-line heredoc well inside the hook timeout" yes \
     "$([ $((SECONDS - long_start)) -lt 5 ] && echo yes || echo no)"
-# Each push is read only up to the next one (#68): 400 mentions stay linear.
+# Pushes are read in one pass over the words (#68). Inside a push, `git` and
+# `push` are only more refspecs; a push ends at a separator, glued or not.
+expect_eq "bash guard: git push text inside a push names main"   2 "$(bguard "git push origin agent/1-x git push main" github-issue-resolver implementer)"
+expect_eq "bash guard: a refspec ending in -git, then push main" 2 "$(bguard "git push origin agent/1-legit push main" github-issue-resolver implementer)"
+expect_eq "bash guard: a refspec glued to git push text"         2 "$(bguard "git push origin HEAD:agent/1-xgit push-fix:main" github-issue-resolver implementer)"
+expect_eq "bash guard: the owner's push naming :main"           2 "$(bguard "git push origin agent/1-x git push :main" "")"
+expect_eq "bash guard: the owner's push naming +main:main"      2 "$(bguard "git push origin agent/1-x git push +main:main" "")"
+expect_eq "bash guard: a glued ; ends the push"                 0 "$(bguard "git push origin agent/1-x; git push origin agent/1-y" github-issue-resolver implementer)"
+expect_eq "bash guard: a flag after a glued ; is not the push's" 0 "$(bguard "git push origin agent/1-x; ls -f" github-issue-resolver implementer)"
+expect_eq "bash guard: a forced push after a glued ;"           2 "$(bguard "git push origin agent/1-x; git push -f origin agent/1-x" github-issue-resolver implementer)"
+expect_eq "bash guard: a quoted push behind bash -c"            2 "$(bguard "bash -c \"git push --force origin agent/1-x\"" github-issue-resolver implementer)"
+expect_eq "bash guard: a push inside \$( )"                     2 "$(bguard "echo \$(git push origin main)" github-issue-resolver implementer)"
+# 2000 mentions: main's guard before #68 took about 1 s per 100 at this size.
 push_payload="$WORK/push-payload.json"
-{ printf 'cat > notes <<EOF\n'; i=0; while [ $i -lt 400 ]; do printf 'git push origin agent/1-x\n'; i=$((i + 1)); done
+{ printf 'cat > notes <<EOF\n'; i=0; while [ $i -lt 2000 ]; do printf 'git push origin agent/1-x\n'; i=$((i + 1)); done
   printf 'EOF\nls'; } | jq -Rs '{tool_input: {command: .}}' > "$push_payload"
 push_start=$SECONDS
-expect_eq "bash guard: 400 push mentions, then ls"              0 \
+expect_eq "bash guard: 2000 push mentions, then ls"             0 \
     "$("$BASH" "$HOOKS/bash_guard.sh" < "$push_payload" >/dev/null 2>&1; echo $?)"
-expect_eq "bash guard: 400 push mentions well inside the hook timeout" yes \
+expect_eq "bash guard: 2000 push mentions well inside the hook timeout" yes \
     "$([ $((SECONDS - push_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"

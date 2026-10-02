@@ -218,44 +218,63 @@ esac
 # Pushes: never rewrite or delete remote history; a subagent pushes only to an
 # agent/ branch. Every push in the command is checked, not only the first: an
 # allowed push must not carry a forbidden one behind a separator.
-rest="$norm"
-while :; do
-    case "$rest" in
-        *"git push"*) ;;
-        *) break ;;
-    esac
-    after="${rest#*git push}"
-    rest="$after"
-    remote=""
-    # Only this push's own words: the next push is checked in its own round,
-    # and reading every later word each round made the cost quadratic.
-    seg="${after%%git push*}"
-    for tok in $seg; do
-        case "$tok" in
-            --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
-                refuse "no force, delete or mirror pushes." \
+#
+# One pass over the words, so the cost grows with the command's length, not
+# with the number of pushes times it. A push starts at the words `git push` and
+# runs to the next separator -- `&&`, `||`, `;`, `|`, `&`, alone or glued to a
+# word. Inside a push, `git` and `push` are only more refspecs, as git reads
+# them: `git push origin agent/1-x git push main` is one push that names main.
+push_word() {
+    case "$1" in
+        --force|--force=*|--force-with-lease*|--force-if-includes|-f|-*f|--delete|-d|--mirror|--all|--prune)
+            refuse "no force, delete or mirror pushes." \
 "History on GitHub is shared state; a rewritten or deleted branch loses other
 agents' and reviewers' work. Push new commits instead." ;;
-            -*|*">"*|*"<"*) continue ;;
-            "&&"|"||"|";"|"|") break ;;
-        esac
-        if [ -z "$remote" ]; then remote="$tok"; continue; fi
-        case "$tok" in
-            +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
+        -*|*">"*|*"<"*|"") return ;;
+    esac
+    if [ -z "$remote" ]; then remote="$1"; return; fi
+    case "$1" in
+        +*|:*) refuse "no forced (+) or deleting (:branch) refspecs." \
 "Push new commits to your agent/ branch instead." ;;
-        esac
-        dest="${tok#*:}"
-        dest="${dest#refs/heads/}"
-        if [ "$subagent" = 1 ]; then
-            case "$dest" in
-                agent/*) ;;
-                *) refuse "an agent pushes only to its agent/<N>- branch." \
+    esac
+    dest="${1#*:}"
+    dest="${dest#refs/heads/}"
+    if [ "$subagent" = 1 ]; then
+        case "$dest" in
+            agent/*) ;;
+            *) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-            esac
-        fi
-    done
-done
+        esac
+    fi
+}
+case "$norm" in
+    *"git push"*)
+        in_push=0 saw_git=0 remote=""
+        for tok in $norm; do
+            if [ "$in_push" = 1 ]; then
+                case "$tok" in
+                    "&&"|"||"|";"|"|"|"&") in_push=0; continue ;;
+                    [\;\&\|]*) in_push=0 ;;      # a separator glued to the next word
+                    *)
+                        word="${tok%%[;&|)\`]*}"   # the part before a glued separator
+                        push_word "$word"
+                        [ "$word" = "$tok" ] || in_push=0
+                        continue ;;
+                esac
+            fi
+            # Not in a push: does this word, after any separator, `$(` or
+            # quote in front of it, start one? (`bash -c "git push …"` does.)
+            bare="${tok//[\"\']/}"
+            lead="${bare%%[!;&|(\`\$]*}"
+            bare="${bare#"$lead"}"
+            if [ "$saw_git" = 1 ] && [ "$bare" = push ]; then
+                in_push=1 remote=""
+            fi
+            saw_git=0
+            [ "$bare" = git ] && saw_git=1
+        done ;;
+esac
 
 labels_something=0
 case "$norm" in
