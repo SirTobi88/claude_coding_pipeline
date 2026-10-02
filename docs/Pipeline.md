@@ -124,7 +124,7 @@ A pull request moves only while its issue lets it. In order:
 | CI failed again | implementer, fix pass (`ci-failed`); waits while the default branch is red |
 | CI green, no bot verdict at this commit | reviewer — `max_review_attempts` per head, then **the owner** |
 | bot requested changes at this commit | implementer, fix pass (`review`) |
-| bot left only comments, `max_comment_only_reviews` times | **the owner** |
+| bot left a comment-only review at this commit (NEEDS_HUMAN) | **the owner** — the tick adds `status:needs-human` if the reviewer could not, and reviews this commit no more |
 | bot approved at this commit | GitHub auto-merge, pinned to that commit — **the owner** if it has not merged after `stale_waiting_hours` |
 
 "CI" means the `required_checks` and nothing else — exactly what branch
