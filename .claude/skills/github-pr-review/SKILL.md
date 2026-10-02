@@ -16,8 +16,8 @@ present, ask; in the pipeline the prompt always names it.
 
 **Every GitHub write that carries the verdict goes through
 `.claude/bin/gh-reviewer`.** Plain `gh` is the owner — the author — and GitHub
-ignores an author's approval. Reads may use either. Never print or copy the
-token the wrapper reads.
+ignores an author's approval. Reads use plain `gh`: the wrapper refuses every
+call this skill does not make. Never print or copy the token the wrapper reads.
 
 **Run every command from the repository root.** Git commands on the review
 worktree use `git -C .claude/worktrees/review-<N> …`. Never run a `.claude/bin/`
