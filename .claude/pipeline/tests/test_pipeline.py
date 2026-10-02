@@ -819,6 +819,16 @@ class OwnerAnswerTests(unittest.TestCase):
         self.assertIn("comments=2", status["description"])
         self.assertEqual(plan.dispatch, [])
 
+    def test_answered_comes_off_first_and_needs_human_last(self):
+        # A failed later removal must leave the PR waiting on the owner, never a
+        # stray human:answered that would answer the next question by itself (#96).
+        prs = [pr(105, labels=[p.NEEDS_HUMAN, p.ANSWERED, "fix-round-2", "conflict-round-1"],
+                  reviews=[review("COMMENTED")])]
+        removed = [o["label"] for o in ops(run([], prs), "remove-label") if o["number"] == 105]
+        self.assertEqual(removed[0], p.ANSWERED)
+        self.assertEqual(removed[-1], p.NEEDS_HUMAN)
+        self.assertEqual(sorted(removed[1:-1]), ["conflict-round-1", "fix-round-2"])
+
     def test_the_answer_status_is_queued_before_the_labels_come_off(self):
         # The status records where the counts stood; written after the label
         # removals, a failed write lost the owner's answer (#88).
