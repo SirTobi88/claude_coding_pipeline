@@ -165,6 +165,18 @@ class AllowRuleTests(unittest.TestCase):
         self.assertTrue(rule_matches("git push origin agent/*", "git push origin agent/12-x"))
         self.assertTrue(rule_matches("./run_tests.sh *", "./run_tests.sh"))
 
+    def test_bin_commands_are_allowed_only_in_their_relative_spelling(self):
+        # The allow rules match the text `.claude/bin/<name> …`. The first
+        # scheduled tick's reviewer called gh-reviewer by its absolute path and
+        # was refused (docs/AgentEnvironment.md § Permissions).
+        for command in (".claude/bin/gh-reviewer api user --jq .login",
+                        ".claude/bin/pipeline checks 105"):
+            with self.subTest(command=command):
+                self.assertTrue(allowed(command))
+                self.assertFalse(allowed("/Users/x/repo/" + command))
+                self.assertFalse(allowed("E:/work/repo/" + command))
+                self.assertFalse(allowed("./" + command))
+
     def test_edits_are_allowed_in_worktrees_and_scratch_only(self):
         edit_rules = {r for r in SETTINGS["permissions"]["allow"] if r.startswith("Edit(")}
         for rule in edit_rules:
