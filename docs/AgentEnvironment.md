@@ -21,11 +21,16 @@ shell, or a binary name.**
 | `jq` | both hooks read their payload with it | `jq --version` |
 | Python ≥ 3.9 | `.claude/bin/pipeline` | `.claude/bin/pipeline --help` |
 | bash | the hooks, the shims, the test entry point | on Windows, Git for Windows' Git Bash |
+| `awk`, `tr`, `sed`, `grep` | the bash guard reads every command with them | `command -v awk tr sed grep` prints four paths |
 | the reviewer token | `.claude/bin/gh-reviewer` | `.claude/bin/gh-reviewer api user --jq .login` |
 | *(your toolchain)* | the test command | *(its version command)* |
 
 **Without `gh` and `jq`, the allowlist guard fails open** — it lets every write
 through by design. Check both before scheduling the tick.
+
+Without awk, tr, sed or grep the bash guard fails closed: it refuses every Bash
+command until they are on PATH. They ship with macOS, Linux and Git for
+Windows' Git Bash.
 
 After installing a tool, **fully quit the Claude desktop app** (tray icon →
 Quit) and reopen it. Closing the window keeps the app running with its old
