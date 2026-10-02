@@ -145,7 +145,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         stubdir = cls.root / ".stub"
         stubdir.mkdir()
         stub = stubdir / "gh"
-        stub.write_text('#!/bin/sh\necho "cwd=$(pwd)"\nenv\n', encoding="utf-8")
+        stub.write_text('#!/bin/sh\necho "cwd=$(pwd)"\necho "args=$*"\nenv\n', encoding="utf-8")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
         cls.env = {**os.environ, "PIPELINE_REVIEWER_TOKEN": "x"}
 
@@ -153,9 +153,11 @@ class GhReviewerAllowlistTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def call(self, args, env=None):
+    def call(self, args, env=None, cwd=None):
+        # From the scratch checkout's root unless a test says otherwise: a
+        # review's body path is relative to where the caller stands.
         return subprocess.run([BASH, str(self.wrapper), *args], env=env or self.env,
-                              capture_output=True, text=True)
+                              cwd=str(cwd or self.root), capture_output=True, text=True)
 
     def run_wrapper(self, args):
         return self.call(args).returncode
@@ -203,7 +205,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         seen = self.seen(out)
         self.assertNotIn("DECOY", out.stdout)
         self.assertNotIn("marker-", out.stdout)
-        self.assertEqual(set(seen) - self.GH_SEES - {"cwd"}, set())
+        self.assertEqual(set(seen) - self.GH_SEES - {"cwd", "args"}, set())
         self.assertEqual(seen["GH_TOKEN"], "x")
         self.assertTrue(seen["cwd"].endswith("/repo"), seen["cwd"])
         self.assertRegex(seen["GH_CONFIG_DIR"], r"/repo/\.pipeline-tmp/gh-reviewer\.[^/]+$")
@@ -223,6 +225,23 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         self.assertFalse(first.endswith("/gh-reviewer"))
         left = sorted(p.name for p in scratch.iterdir())
         self.assertEqual(left, ["gh-reviewer"], "the per-call directories are removed")
+
+    REVIEW = ["api", "repos/{owner}/{repo}/pulls/105/reviews", "-f", "commit_id=abc",
+              "-f", "event=APPROVE", "-F", "body=@.pipeline-tmp/review-105.md"]
+
+    def test_the_body_path_is_relative_to_the_caller(self):
+        # gh runs in the repository root; a reviewer in a worktree under it
+        # still names its own report.
+        sub = self.root / ".claude" / "worktrees" / "review-105"
+        sub.mkdir(parents=True, exist_ok=True)
+        from_sub = self.seen(self.call(self.REVIEW, cwd=sub))["args"]
+        self.assertIn("body=@.claude/worktrees/review-105/.pipeline-tmp/review-105.md", from_sub)
+        from_root = self.seen(self.call(self.REVIEW))["args"]
+        self.assertIn("body=@.pipeline-tmp/review-105.md", from_root)
+
+    def test_a_review_from_outside_the_checkout_is_refused(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            self.assertEqual(self.call(self.REVIEW, cwd=elsewhere).returncode, 4)
 
     def test_gh_s_exit_code_comes_through(self):
         failing = self.root / ".stub" / "gh"

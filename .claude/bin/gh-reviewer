@@ -23,9 +23,12 @@
 set -u
 # The script's own directory, found in bash: `dirname` would be a program the
 # caller's PATH chooses. From here on only the fixed PATH below is used.
-case "${BASH_SOURCE[0]}" in */*) here="${BASH_SOURCE[0]%/*}" ;; *) here=. ;; esac
+# On Windows the path may come with backslashes (`C:\…\gh-reviewer`).
+src="${BASH_SOURCE[0]}"
+case "$src" in */*|*\\*) here="${src%[/\\]*}" ;; *) here=. ;; esac
 here="$(cd "$here" && pwd)"
 caller_path="$PATH"
+caller_dir="$(pwd -P)"   # physical, as root below: /var is /private/var on macOS
 safe_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 safe_path="$safe_path:/mingw64/bin:/c/Program Files/GitHub CLI:/c/Program Files/Git/cmd"
 export PATH="$safe_path"
@@ -149,11 +152,28 @@ if [ -z "$gh_bin" ]; then
     echo "gh-reviewer: gh is not installed in a standard place ($safe_path)." >&2
     exit 3
 fi
-root="$(cd "$here/../.." && pwd)"
+root="$(cd "$here/../.." && pwd -P)"
 mkdir -p "$root/.pipeline-tmp" &&
     own="$(mktemp -d "$root/.pipeline-tmp/gh-reviewer.XXXXXX")" ||
     { echo "gh-reviewer: cannot create a config directory under $root/.pipeline-tmp" >&2; exit 3; }
 trap 'rm -rf "$own"' EXIT
+
+# gh runs in the repository root, but the review's body path is relative to
+# where the caller stands -- a reviewer may be in a worktree under the root.
+# Kept relative (Windows' gh takes no MSYS path), with the caller's place in
+# front; a caller outside the checkout has no body gh may read.
+if [ "${1:-}" = api ] && [ "${2:-}" != user ]; then
+    case "$caller_dir/" in
+        "$root/"*) prefix="${caller_dir#"$root"}"; prefix="${prefix#/}" ;;
+        *) echo "gh-reviewer: run it from inside $root, where the review's body file is." >&2; exit 4 ;;
+    esac
+    args=()
+    for a in "$@"; do
+        case "$a" in body=@*) a="body=@${prefix:+$prefix/}${a#body=@}" ;; esac
+        args+=("$a")
+    done
+    set -- "${args[@]}"
+fi
 keep=()
 for name in HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy \
             SSL_CERT_FILE SSL_CERT_DIR SYSTEMROOT SystemRoot WINDIR windir COMSPEC ComSpec \
