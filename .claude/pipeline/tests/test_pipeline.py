@@ -679,6 +679,22 @@ class ChecksTests(unittest.TestCase):
         plan = run([], [pr(105, reviews=[review("COMMENTED"), review("COMMENTED")])])
         self.assertIn("no verdict", ops(plan, "comment")[0]["body"])
 
+    def test_one_comment_only_review_goes_to_the_owner(self):
+        # A bot COMMENT review is a NEEDS_HUMAN verdict; without the label the
+        # reviewer's label edit was refused. One review is enough (#81).
+        plan = run([], [pr(105, reviews=[review("COMMENTED")])])
+        self.assertEqual([o["label"] for o in ops(plan, "add-label")], [p.NEEDS_HUMAN])
+        self.assertEqual(plan.dispatch, [])
+        self.assertTrue(any("PR #105" in w for w in plan.awaiting_human), plan.awaiting_human)
+
+    def test_a_new_comment_review_after_the_answer_goes_to_the_owner(self):
+        # The owner answered the first question; the reviewer asked again at
+        # the same head, and its label edit was refused once more.
+        again = dict(pr(105, reviews=[review("COMMENTED"), review("COMMENTED")]), answeredComments=1)
+        plan = run([], [again])
+        self.assertEqual([o["label"] for o in ops(plan, "add-label")], [p.NEEDS_HUMAN])
+        self.assertEqual(plan.dispatch, [])
+
 
 class MainHealthTests(unittest.TestCase):
     RED = {"sha": "deadbeef00", "red": ["ci"]}

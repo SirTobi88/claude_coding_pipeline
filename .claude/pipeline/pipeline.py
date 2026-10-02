@@ -1010,6 +1010,14 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             fix("review")
             continue
         comment_only -= int(pr.get("answeredComments") or 0)
+        if comment_only > 0:
+            # Every comment-only review by the bot is a NEEDS_HUMAN verdict
+            # (github-pr-review § 9). The PR got here without the label, so the
+            # reviewer's label edit was refused: add it, review this head no more.
+            pr_to_owner(n, "the reviewer asks you a question",
+                        "the reviewer answered this head with a comment and no verdict "
+                        "(NEEDS_HUMAN); its question is in that review.")
+            continue
         if comment_only >= lim.max_comment_only_reviews:
             pr_to_owner(n, f"no verdict after {comment_only} reviews",
                         f"the reviewer answered this head {comment_only} times with a comment "
