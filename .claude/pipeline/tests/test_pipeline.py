@@ -1209,6 +1209,19 @@ class PreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(self.check(Path(d)), [])
 
+    def test_missing_text_tools_are_reported(self):
+        # Without them the bash guard refuses every Bash command (#78), so the
+        # tick should say so (#85).
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            problems = p.preflight(Path(d), run=self.fake_git(),
+                                   which=lambda t: None if t in ("tr", "grep") else "/usr/bin/" + t,
+                                   bash=lambda: "/bin/bash")
+        named = [x for x in problems if "tr" in x.split(" not on PATH")[0]]
+        self.assertEqual(len(named), 1, problems)
+        self.assertIn("grep", named[0])
+        self.assertIn("bash guard", named[0])
+
     def test_local_settings_dirty_tree_and_wrong_branch_are_reported(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

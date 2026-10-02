@@ -1847,6 +1847,10 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
     if not which("jq"):
         problems.append("jq not on PATH: the allowlist guard and the bash guard cannot read "
                         "their input (docs/AgentEnvironment.md)")
+    missing = [t for t in ("awk", "tr", "sed", "grep") if not which(t)]
+    if missing:
+        problems.append(f"{', '.join(missing)} not on PATH: the bash guard refuses every Bash "
+                        "command without them (docs/AgentEnvironment.md)")
     if not bash():
         problems.append("bash not found: the hooks and the allowlist parser cannot run")
 
@@ -2049,7 +2053,7 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
     def add(level: str, name: str, detail: str) -> None:
         out.append((level, name, detail))
 
-    for tool in ("gh", "git", "jq"):
+    for tool in ("gh", "git", "jq", "awk", "tr", "sed", "grep"):
         add("ok" if which(tool) else "fail", f"tool: {tool}",
             "on PATH" if which(tool) else "missing -- docs/AgentEnvironment.md")
     add("ok" if bash_path() else "fail", "tool: bash", bash_path() or "no usable bash")

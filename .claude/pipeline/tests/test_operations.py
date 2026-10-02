@@ -307,6 +307,20 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["CI readable"][0], "fail")
         self.assertIn("Actions", report["CI readable"][1])
 
+    def test_a_missing_text_tool_fails_the_report(self):
+        # Without awk the bash guard refuses every Bash command (#78); doctor
+        # must not show 0 failing then (#85).
+        gh = FakeGh()
+        gh.reviewer_login = lambda: None
+
+        def fake_run(args, **_):
+            return SimpleNamespace(returncode=0, stdout="github_pat_x\n", stderr="")
+        report = {name: (level, detail) for level, name, detail in
+                  p.doctor_report(gh, p.REPO_ROOT, run=fake_run,
+                                  which=lambda t: None if t == "awk" else "/usr/bin/" + t)}
+        self.assertEqual(report["tool: awk"][0], "fail")
+        self.assertEqual(report["tool: sed"][0], "ok")
+
 
 class ProtectionStateTests(unittest.TestCase):
     def test_states(self):
