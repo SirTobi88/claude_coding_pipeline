@@ -278,6 +278,12 @@ class GhReviewerAllowlistTests(unittest.TestCase):
                     out = self.call(self.review(body))
                     self.assertEqual(out.returncode, 4, out.stderr)
                     self.assertNotIn("args=", out.stdout, "nothing reaches gh")
+        # A symlink inside the checkout is read through to its target. Not on
+        # Windows: Python makes a native symlink there, whose C:\ target MSYS's
+        # realpath does not turn into /c/…, so the wrapper refuses it -- the
+        # safe direction, and no agent writes its report through a symlink.
+        if os.name == "nt":
+            return
         inside = scratch / "link-in.md"
         try:
             inside.symlink_to(scratch / "review-105.md")
