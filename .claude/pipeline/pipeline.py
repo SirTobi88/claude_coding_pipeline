@@ -1831,6 +1831,26 @@ def tick_environment(env=os.environ, run=subprocess.run, gh: str = "gh") -> list
     return reasons
 
 
+# The text tools the bash guard cannot work without: it refuses every Bash
+# command when one is missing (.claude/hooks/bash_guard.sh, #78).
+GUARD_TOOLS = ("awk", "tr", "sed", "grep")
+
+
+def guard_tools_missing(run=subprocess.run, bash=bash_path) -> list[str] | None:
+    """Which of GUARD_TOOLS the guard's own bash cannot find; None when there
+    is no bash to ask. Asked of that bash, not of Python's PATH: on Windows the
+    tools live in Git's usr/bin, which Git Bash sees and PowerShell does not."""
+    b = bash()
+    if not b:
+        return None
+    try:
+        proc = run([b, "-c", 'for t in "$@"; do command -v "$t" >/dev/null 2>&1 || echo "$t"; done',
+                    "_", *GUARD_TOOLS], capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        return None
+    return [t for t in (proc.stdout or "").split() if t in GUARD_TOOLS]
+
+
 def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
               bash=bash_path) -> list[str]:
     """What is wrong with the machine and checkout the tick runs from.
@@ -1847,10 +1867,11 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
     if not which("jq"):
         problems.append("jq not on PATH: the allowlist guard and the bash guard cannot read "
                         "their input (docs/AgentEnvironment.md)")
-    missing = [t for t in ("awk", "tr", "sed", "grep") if not which(t)]
+    missing = guard_tools_missing(run=run, bash=bash)
     if missing:
-        problems.append(f"{', '.join(missing)} not on PATH: the bash guard refuses every Bash "
-                        "command without them (docs/AgentEnvironment.md)")
+        problems.append(f"{', '.join(missing)} not found by the guard's bash: "
+                        "the bash guard refuses every Bash command without them "
+                        "(docs/AgentEnvironment.md)")
     if not bash():
         problems.append("bash not found: the hooks and the allowlist parser cannot run")
 
@@ -2053,10 +2074,20 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
     def add(level: str, name: str, detail: str) -> None:
         out.append((level, name, detail))
 
-    for tool in ("gh", "git", "jq", "awk", "tr", "sed", "grep"):
+    for tool in ("gh", "git", "jq"):
         add("ok" if which(tool) else "fail", f"tool: {tool}",
             "on PATH" if which(tool) else "missing -- docs/AgentEnvironment.md")
     add("ok" if bash_path() else "fail", "tool: bash", bash_path() or "no usable bash")
+    # The guard's tools, as the guard's bash sees them (#85).
+    missing = guard_tools_missing(run=run)
+    for tool in GUARD_TOOLS:
+        if missing is None:
+            add("fail", f"tool: {tool}", "no usable bash to look it up in")
+        elif tool in missing:
+            add("fail", f"tool: {tool}", "missing -- without it no agent Bash call gets past "
+                                         "the bash guard (docs/AgentEnvironment.md)")
+        else:
+            add("ok", f"tool: {tool}", "found by the guard's bash")
 
     kind, host = gh_login_kind(run=run, gh=gh.gh)
     if kind is None:
