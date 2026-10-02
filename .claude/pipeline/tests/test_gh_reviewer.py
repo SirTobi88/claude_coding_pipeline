@@ -330,6 +330,7 @@ class GhReviewerAllowlistTests(unittest.TestCase):
             self.skipTest("cannot create a symlink here")
         out = self.call(self.review(".pipeline-tmp/cfg.md"))
         self.assertEqual(out.returncode, 4, out.stderr)
+        self.assertIn("not .md", out.stderr, "refused by the .md check, not another one")
         self.assertNotIn("args=", out.stdout, "nothing reaches gh")
 
     def test_a_review_from_outside_the_checkout_is_refused(self):
