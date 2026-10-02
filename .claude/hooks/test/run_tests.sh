@@ -533,6 +533,17 @@ chmod +x "$empty_tr/tr"
 expect_eq "bash guard: a tr that prints nothing refuses"        2 \
     "$(jq -n '{tool_input: {command: "git status"}}' | PATH="$empty_tr:$PATH" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1; echo $?)"
 expect_eq "bash guard: a plain push still passes"               0 "$(bguard "git push origin agent/1-x" "")"
+# ~100 KB of CRLF lines, then a forced push, under a UTF-8 locale: carriage
+# returns are dropped in linear time, so the guard refuses well inside the
+# hook's timeout (stripping them in bash 3.2 took over a minute).
+crlf_payload="$WORK/crlf-payload.json"
+{ i=0; while [ $i -lt 2500 ]; do printf 'echo line %s of a long crlf command\r\n' "$i"; i=$((i + 1)); done
+  printf 'git push --force origin main'; } | jq -Rs '{tool_input: {command: .}}' > "$crlf_payload"
+crlf_start=$SECONDS
+expect_eq "bash guard: a 100 KB CRLF command, then a forced push" 2 \
+    "$(LC_ALL=en_US.UTF-8 "$BASH" "$HOOKS/bash_guard.sh" < "$crlf_payload" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: a 100 KB CRLF command well inside the hook timeout" yes \
+    "$([ $((SECONDS - crlf_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\

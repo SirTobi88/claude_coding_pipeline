@@ -34,11 +34,12 @@
 # attempt, and tells the agent what to do instead. What actually binds is in
 # docs/Pipeline.md § What binds an agent.
 #
-# It errs towards refusing whenever a tool it uses is missing or silent: a
-# denied command costs a retry, a missed one costs the gate. Without jq it
-# falls back to matching the raw payload; without tr, sed, grep or awk, or
-# when tr or sed leaves nothing to read, or the push check prints no verdict,
-# it refuses.
+# It errs towards refusing where it can tell a tool let it down: a denied
+# command costs a retry, a missed one costs the gate. It refuses when tr, sed,
+# grep or awk is missing; when tr or sed leaves nothing of a command to read;
+# and when the push check's awk fails, prints nothing, or prints a verdict it
+# does not know. Without jq it falls back to matching the raw payload. A jq,
+# cat or head that misbehaves, or a grep that errors, is not caught (#82).
 
 set -u
 set -f   # the command's words are split below; never expand them as globs
@@ -63,12 +64,22 @@ if command -v jq >/dev/null 2>&1; then
     # One jq call, as this runs before every Bash command: the agent type on
     # the first line, then the command, which may span lines. The agent type
     # is kept to one line, or its tail would be read as part of the command.
-    # Carriage returns (Windows' jq) are dropped in bash, not by tr: a tr
-    # that prints nothing would empty the command and pass it unread.
-    fields="$(printf '%s' "$payload" \
-              | jq -r '"\(.agent_type // "" | tostring | split("\n") | join(" "))\n\(.tool_input.command // "")"' \
-                2>/dev/null)"
-    fields="${fields//$'\r'/}"
+    # Carriage returns (Windows' jq) are dropped by tr, which is linear: the
+    # same in bash (${x//$'\r'/}) is quadratic in bash 3.2 and ran the hook
+    # into its timeout, which skips the guard. A tr that prints nothing would
+    # empty the command and pass it unread, so that refuses.
+    raw="$(printf '%s' "$payload" \
+           | jq -r '"\(.agent_type // "" | tostring | split("\n") | join(" "))\n\(.tool_input.command // "")"' \
+             2>/dev/null)"
+    fields="$(printf '%s' "$raw" | tr -d '\r')"
+    if [ -n "$raw" ] && [ -z "$fields" ]; then
+        {
+            echo "BLOCKED by .claude/hooks/bash_guard.sh: the guard could not read the command (tr failed); the command is refused rather than let through unchecked."
+            echo
+            echo "Check that tr works, then run the command again."
+        } >&2
+        exit 2
+    fi
     agent="${fields%%"
 "*}"
     cmd="${fields#"$agent"}"
@@ -333,6 +344,7 @@ case "$norm" in
             }')" || verdict=E    # awk failed or is missing: refuse, never pass unchecked
         # Only P passes. An empty verdict (a silent awk) refuses through
         # push_refuse's E|* arm.
+        verdict="${verdict%$'\r'}"     # an awk on Windows may end its line with CR
         [ "$verdict" = P ] || push_refuse "$verdict" ;;
 esac
 
