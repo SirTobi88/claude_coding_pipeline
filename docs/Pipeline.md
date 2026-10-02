@@ -337,7 +337,8 @@ One time, in this order. `docs/ADOPTING.md` walks through it for an existing
 project.
 
 **1. Tools on the machine that runs the tick.** `gh` (authenticated with the
-agents' token, step 2), `jq`, Python ≥ 3.9, bash, and the project's own toolchain. See
+agents' token, step 2), `jq`, Python ≥ 3.9, bash, `awk`, `tr`, `sed`, `grep`,
+and the project's own toolchain. See
 `docs/AgentEnvironment.md`. After installing, **fully quit and reopen** the
 Claude app — a running app keeps its old `PATH`.
 
