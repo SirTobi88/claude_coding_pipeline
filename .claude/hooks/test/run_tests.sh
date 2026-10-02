@@ -511,6 +511,28 @@ mkdir -p "$odd_awk"
 printf '#!/bin/sh\necho Z\n' > "$odd_awk/awk"
 chmod +x "$odd_awk/awk"
 expect_eq "bash guard: an unknown verdict from awk refuses"     "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x" "$odd_awk")"
+# #78: a silent awk, a missing tool, and a tr that prints nothing all refuse.
+silent_awk="$WORK/silent-awk"
+mkdir -p "$silent_awk"
+printf '#!/bin/sh\nexit 0\n' > "$silent_awk/awk"
+chmod +x "$silent_awk/awk"
+expect_eq "bash guard: a silent awk refuses a push"             "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x" "$silent_awk")"
+# A PATH holding only what the guard needs, minus sed.
+no_sed="$WORK/no-sed"
+mkdir -p "$no_sed"
+for t in jq cat tr grep awk head; do
+    src="$(command -v "$t")"
+    ln -s "$src" "$no_sed/$t" 2>/dev/null || cp "$src" "$no_sed/$t"
+done
+expect_eq "bash guard: a missing tool refuses"                  2 \
+    "$(jq -n '{tool_input: {command: "git status"}}' | PATH="$no_sed" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1; echo $?)"
+empty_tr="$WORK/empty-tr"
+mkdir -p "$empty_tr"
+printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' > "$empty_tr/tr"
+chmod +x "$empty_tr/tr"
+expect_eq "bash guard: a tr that prints nothing refuses"        2 \
+    "$(jq -n '{tool_input: {command: "git status"}}' | PATH="$empty_tr:$PATH" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: a plain push still passes"               0 "$(bguard "git push origin agent/1-x" "")"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\

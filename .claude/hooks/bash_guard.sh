@@ -34,11 +34,27 @@
 # attempt, and tells the agent what to do instead. What actually binds is in
 # docs/Pipeline.md § What binds an agent.
 #
-# Without jq it falls back to matching the raw payload, which errs towards
-# refusing: a denied command costs a retry, a missed one costs the gate.
+# It errs towards refusing whenever a tool it uses is missing or silent: a
+# denied command costs a retry, a missed one costs the gate. Without jq it
+# falls back to matching the raw payload; without tr, sed, grep or awk, or
+# when tr or sed leaves nothing to read, or the push check prints no verdict,
+# it refuses.
 
 set -u
 set -f   # the command's words are split below; never expand them as globs
+
+# Every check below reads text through these. One missing makes them match
+# nothing, which would let every command through.
+for tool in tr sed grep awk; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        {
+            echo "BLOCKED by .claude/hooks/bash_guard.sh: a tool the guard needs is missing (tr, sed, grep or awk); the command is refused rather than let through unchecked."
+            echo
+            echo "Install $tool, or put it on PATH, then run the command again."
+        } >&2
+        exit 2
+    fi
+done
 
 role="${1:-}"
 payload="$(cat)"
@@ -47,9 +63,12 @@ if command -v jq >/dev/null 2>&1; then
     # One jq call, as this runs before every Bash command: the agent type on
     # the first line, then the command, which may span lines. The agent type
     # is kept to one line, or its tail would be read as part of the command.
+    # Carriage returns (Windows' jq) are dropped in bash, not by tr: a tr
+    # that prints nothing would empty the command and pass it unread.
     fields="$(printf '%s' "$payload" \
               | jq -r '"\(.agent_type // "" | tostring | split("\n") | join(" "))\n\(.tool_input.command // "")"' \
-                2>/dev/null | tr -d '\r')"
+                2>/dev/null)"
+    fields="${fields//$'\r'/}"
     agent="${fields%%"
 "*}"
     cmd="${fields#"$agent"}"
@@ -118,6 +137,13 @@ refuse() {
     } >&2
     exit 2
 }
+
+# tr and sed ran but left nothing to read: every check below would match
+# nothing and let the command through.
+if [ -z "$norm" ]; then
+    refuse "the guard could not read the command (tr or sed failed); the command is refused rather than let through unchecked." \
+"Check that tr and sed work, then run the command again."
+fi
 
 # A subagent, or a role given on the command line, is never the owner.
 subagent=0
@@ -242,8 +268,8 @@ agents' and reviewers' work. Push new commits instead." ;;
         A) refuse "an agent pushes only to its agent/<N>- branch." \
 "Branches outside agent/ are no agent's to write; the default branch takes
 changes only through a reviewed pull request." ;;
-        # E, and anything else awk might print: a verdict this guard does not
-        # know is not a pass.
+        # E, nothing at all, and anything else awk might print: a verdict this
+        # guard does not know is not a pass. (P never gets here.)
         E|*) refuse "the push check could not run (awk failed); the command is refused rather than let through unchecked." \
 "The guard checks pushes with awk. Check that awk is installed and on PATH,
 then run the command again." ;;
@@ -301,8 +327,13 @@ case "$norm" in
                     if (remote_set) { if (bd[s] != "") { print bd[s]; exit } }
                     else if (nw[s] <= n && bd[nw[s] + 1] != "") { print bd[nw[s] + 1]; exit }
                 }
+                # Checked, nothing refused: said out loud, so that a silent
+                # awk is not read as a pass.
+                print "P"
             }')" || verdict=E    # awk failed or is missing: refuse, never pass unchecked
-        [ -n "$verdict" ] && push_refuse "$verdict" ;;
+        # Only P passes. An empty verdict (a silent awk) refuses through
+        # push_refuse's E|* arm.
+        [ "$verdict" = P ] || push_refuse "$verdict" ;;
 esac
 
 labels_something=0
