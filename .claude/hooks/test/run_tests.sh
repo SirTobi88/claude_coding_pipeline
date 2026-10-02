@@ -511,6 +511,39 @@ mkdir -p "$odd_awk"
 printf '#!/bin/sh\necho Z\n' > "$odd_awk/awk"
 chmod +x "$odd_awk/awk"
 expect_eq "bash guard: an unknown verdict from awk refuses"     "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x" "$odd_awk")"
+# #78: a silent awk, a missing tool, and a tr that prints nothing all refuse.
+silent_awk="$WORK/silent-awk"
+mkdir -p "$silent_awk"
+printf '#!/bin/sh\nexit 0\n' > "$silent_awk/awk"
+chmod +x "$silent_awk/awk"
+expect_eq "bash guard: a silent awk refuses a push"             "$could_not_run" "$(bguard_broken_awk "git push origin agent/1-x" "$silent_awk")"
+# A PATH holding only what the guard needs, minus sed.
+no_sed="$WORK/no-sed"
+mkdir -p "$no_sed"
+for t in jq cat tr grep awk head; do
+    src="$(command -v "$t")"
+    ln -s "$src" "$no_sed/$t" 2>/dev/null || cp "$src" "$no_sed/$t"
+done
+expect_eq "bash guard: a missing tool refuses"                  2 \
+    "$(jq -n '{tool_input: {command: "git status"}}' | PATH="$no_sed" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1; echo $?)"
+empty_tr="$WORK/empty-tr"
+mkdir -p "$empty_tr"
+printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' > "$empty_tr/tr"
+chmod +x "$empty_tr/tr"
+expect_eq "bash guard: a tr that prints nothing refuses"        2 \
+    "$(jq -n '{tool_input: {command: "git status"}}' | PATH="$empty_tr:$PATH" "$BASH" "$HOOKS/bash_guard.sh" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: a plain push still passes"               0 "$(bguard "git push origin agent/1-x" "")"
+# ~100 KB of CRLF lines, then a forced push, under a UTF-8 locale: carriage
+# returns are dropped in linear time, so the guard refuses well inside the
+# hook's timeout (stripping them in bash 3.2 took over a minute).
+crlf_payload="$WORK/crlf-payload.json"
+{ i=0; while [ $i -lt 2500 ]; do printf 'echo line %s of a long crlf command\r\n' "$i"; i=$((i + 1)); done
+  printf 'git push --force origin main'; } | jq -Rs '{tool_input: {command: .}}' > "$crlf_payload"
+crlf_start=$SECONDS
+expect_eq "bash guard: a 100 KB CRLF command, then a forced push" 2 \
+    "$(LC_ALL=en_US.UTF-8 "$BASH" "$HOOKS/bash_guard.sh" < "$crlf_payload" >/dev/null 2>&1; echo $?)"
+expect_eq "bash guard: a 100 KB CRLF command well inside the hook timeout" yes \
+    "$([ $((SECONDS - crlf_start)) -lt 5 ] && echo yes || echo no)"
 expect_eq "bash guard: a here-string is not a heredoc"          2 "$(bguard "cat <<<EOF
 .claude/bin/gh-reviewer api user" github-issue-resolver implementer)"
 expect_eq "bash guard: a backslash continues the push"          0 "$(bguard "git push origin \\
