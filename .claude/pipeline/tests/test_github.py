@@ -119,6 +119,38 @@ class ApplyOpsTests(unittest.TestCase):
         p.apply_ops(gh, plan, lint_fn=None)
         self.assertEqual(gh.labels_of[("pr", 105)], set())
 
+    def test_a_failed_answer_removal_skips_the_rest(self):
+        # #98: a failed human:answered removal stops the removals after it, so
+        # the PR keeps waiting on the owner with its rounds; 106's removal and
+        # 105's ordinary ops still run.
+        gh = FakeGh(prs={105: {p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1"}, 106: {p.NEEDS_HUMAN}},
+                    responses=[(lambda a: a[:3] == ["pr", "edit", "105"] and p.ANSWERED in a,
+                                p.GhError("HTTP 502"))])
+        plan = p.Plan(ops=[
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": "fix-round-1", "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 106, "label": p.NEEDS_HUMAN, "after_status": True},
+        ])
+        done = p.apply_ops(gh, plan, lint_fn=None)
+        self.assertTrue(done[0].startswith("FAILED remove-label 105"), done)
+        self.assertEqual(done[1:3], ["SKIPPED remove-label 105: an earlier answer write (remove-label) failed"] * 2)
+        self.assertEqual(gh.labels_of[("pr", 105)], {p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1"})
+        self.assertEqual(gh.labels_of[("pr", 106)], set())
+
+    def test_a_stale_answer_write_also_skips_the_rest(self):
+        # The issue moved since the survey: the set-status raises StaleState,
+        # and nothing after it in the answer is written.
+        gh = FakeGh(issues={5: {p.AGENT_TASK, p.READY}})
+        plan = p.Plan(ops=[
+            {"op": "set-status", "number": 5, "status": p.ESCALATED, "expect": p.NEEDS_HUMAN,
+             "after_status": True},
+            {"op": "remove-label", "kind": "issue", "number": 5, "label": p.ANSWERED, "after_status": True},
+        ])
+        done = p.apply_ops(gh, plan, lint_fn=None)
+        self.assertTrue(done[0].startswith("SKIPPED set-status 5"), done)
+        self.assertEqual(done[1], "SKIPPED remove-label 5: an earlier answer write (set-status) failed")
+
     def test_a_failed_label_skips_its_comment_but_not_other_items(self):
         gh = FakeGh(prs={105: set(), 106: set()}, responses=[
             (lambda a: a[:3] == ["pr", "edit", "105"], p.GhError("label not found"))])
@@ -197,6 +229,21 @@ class ClaimTests(unittest.TestCase):
         gh = FakeGh(prs={105: set()})
         p.claim(gh, {"kind": "fix", "pr": 105, "round_label": "conflict-round-1"})
         self.assertEqual(gh.labels_of[("pr", 105)], {p.WORKING, "conflict-round-1"})
+
+    def test_an_owner_answered_triage_claim_needs_the_answer_recorded(self):
+        # #98: apply_ops stopped before the answer was recorded; triage must not
+        # start on an issue that still waits on the owner.
+        gh = FakeGh(issues={5: {p.AGENT_TASK, p.NEEDS_HUMAN, p.ANSWERED}})
+        item = {"kind": "triage", "agent": "github-triage", "issue": 5, "reason": "owner-answered"}
+        with self.assertRaises(p.StaleState):
+            p.claim(gh, item)
+        self.assertNotIn(p.WORKING, gh.labels_of[("issue", 5)])
+        gh.labels_of[("issue", 5)] = {p.AGENT_TASK, p.ESCALATED, p.ANSWERED}
+        with self.assertRaises(p.StaleState):
+            p.claim(gh, item)
+        gh.labels_of[("issue", 5)] = {p.AGENT_TASK, p.ESCALATED}
+        p.claim(gh, item)
+        self.assertIn(p.WORKING, gh.labels_of[("issue", 5)])
 
     def test_roadmap_planning_opens_its_own_claim(self):
         gh = FakeGh()

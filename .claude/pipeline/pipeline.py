@@ -752,11 +752,14 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
     def fresh_working(item: dict) -> bool:
         return WORKING in labels_of(item) and not stale(item, lim.stale_working)
 
-    def issue_status(n: int, status: str | None, expect, why: str) -> None:
+    def issue_status(n: int, status: str | None, expect, why: str,
+                     after_status: bool = False) -> None:
         # `expect` is the status this tick saw. apply_ops re-reads the labels
         # and skips the write when someone moved the issue in the meantime.
-        plan.ops.append({"op": "set-status", "number": n, "status": status,
-                         "expect": expect, "why": why})
+        op = {"op": "set-status", "number": n, "status": status, "expect": expect, "why": why}
+        if after_status:
+            op["after_status"] = True
+        plan.ops.append(op)
 
     owner = snap.get("owner_login")
     answer_how = (f"Answer in a comment and add the `{ANSWERED}` label; the next tick picks it "
@@ -853,8 +856,9 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             # human:answered first, status:needs-human last. If the run stops
             # between removals, the PR is left waiting on the owner, who is
             # asked again -- never with a stray human:answered, which would
-            # answer the next question on this PR by itself. (A single removal
-            # that fails does not stop the others; that case is #98.)
+            # answer the next question on this PR by itself. A removal that
+            # fails stops the ones after it (apply_ops), so a failure leaves
+            # the same: human:answered still on, or the PR waiting on the owner.
             rounds = sorted(l for l in labels if l.startswith((FIX_ROUND, CONFLICT_ROUND)))
             for label in [ANSWERED, *rounds, NEEDS_HUMAN]:
                 plan.ops.append({"op": "remove-label", "kind": "pr", "number": n, "label": label,
@@ -1068,9 +1072,12 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if IDEA in labels:
             if NEEDS_HUMAN in labels and ANSWERED in labels:
                 # The planner reads the idea's comments; the answer is there.
-                for label in (NEEDS_HUMAN, ANSWERED):
+                # human:answered first: a failure stops the second removal, so
+                # the idea is never left with a stray human:answered.
+                for label in (ANSWERED, NEEDS_HUMAN):
                     plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
-                                     "label": label, "why": "the owner answered"})
+                                     "label": label, "why": "the owner answered",
+                                     "after_status": True})
                 plan.waiting.append(f"{tag}: the owner answered -- planned next tick")
                 ideas_open = True
                 continue
@@ -1125,10 +1132,16 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if status == NEEDS_HUMAN and ANSWERED in labels:
             # The owner answered the question. Triage works the answer into the
             # issue, however often it has answered before: this is new input.
-            issue_status(n, ESCALATED, NEEDS_HUMAN, "the owner answered")
-            for label in sorted({ANSWERED, TRIAGED} & labels):
+            # human:answered first, then the status: if the removal fails, the
+            # status write is skipped and the issue stays as the owner left it,
+            # so the next tick runs this branch again (claim() refuses triage).
+            plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
+                             "label": ANSWERED, "why": "the owner answered",
+                             "after_status": True})
+            issue_status(n, ESCALATED, NEEDS_HUMAN, "the owner answered", after_status=True)
+            if TRIAGED in labels:
                 plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
-                                 "label": label, "why": "the owner answered"})
+                                 "label": TRIAGED, "why": "the owner answered"})
             if triage_running + count["triage"] < lim.max_parallel_triage and not fresh_working(issue):
                 count["triage"] += 1
                 plan.dispatch.append({"kind": "triage", "agent": "github-triage", "issue": n,
@@ -2221,7 +2234,10 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
     moved skips the comments that would have explained it."""
     done = []
     failed: set[tuple] = set()
-    status_failed: set[tuple] = set()   # targets whose post-status did not happen
+    # Targets whose answer writes stopped: the post-status, or one of the
+    # after_status writes, failed. Their remaining after_status writes are
+    # skipped, so the owner's answer is either recorded whole or not at all.
+    status_failed: dict[tuple, str] = {}
     for op in plan.ops:
         kind = op["op"]
         n = op.get("number")
@@ -2230,7 +2246,7 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
             done.append(f"SKIPPED comment {n}: the write it explains did not happen")
             continue
         if op.get("after_status") and target in status_failed:
-            done.append(f"SKIPPED {kind} {n}: the answer status was not recorded")
+            done.append(f"SKIPPED {kind} {n}: {status_failed[target]}")
             continue
         try:
             if kind == "set-status":
@@ -2266,15 +2282,20 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
                         f"{op.get('why', '')}".replace("  ", " ").strip())
         except StaleState as e:
             failed.add(target)
-            if kind == "post-status":
-                status_failed.add(target)
+            stop_answer(status_failed, target, kind, op)
             done.append(f"SKIPPED {kind} {n}: {e}")
         except GhError as e:
             failed.add(target)
-            if kind == "post-status":
-                status_failed.add(target)
+            stop_answer(status_failed, target, kind, op)
             done.append(f"FAILED {kind} {n}: {e}")
     return done
+
+
+def stop_answer(status_failed: dict, target: tuple, kind: str, op: dict) -> None:
+    if kind == "post-status":
+        status_failed.setdefault(target, "the answer status was not recorded")
+    elif op.get("after_status"):
+        status_failed.setdefault(target, f"an earlier answer write ({kind}) failed")
 
 
 def claim(gh: Gh, item: dict) -> str:
@@ -2312,8 +2333,15 @@ def claim(gh: Gh, item: dict) -> str:
         return f"claimed PR #{p} ({', '.join(add)})"
     if kind == "triage" or (kind == "plan" and item.get("issue")):
         n = item["issue"]
-        if WORKING in gh.labels_now("issue", n):
+        labels = gh.labels_now("issue", n)
+        if WORKING in labels:
             raise StaleState(f"#{n} is already held")
+        if item.get("reason") == "owner-answered" and (
+                status_of(labels) != ESCALATED or ANSWERED in labels):
+            # The answer was not recorded (apply_ops stopped): triage would
+            # start on an issue that still waits on the owner. The next tick
+            # runs the answered branch again.
+            raise StaleState(f"#{n}: the owner's answer is not recorded yet")
         gh.edit_labels("issue", n, add=[WORKING])
         return f"claimed #{n} ({WORKING})"
     if kind == "plan":
