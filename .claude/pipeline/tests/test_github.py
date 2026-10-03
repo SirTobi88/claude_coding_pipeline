@@ -91,15 +91,15 @@ class ApplyOpsTests(unittest.TestCase):
 
     def test_a_failed_answer_status_keeps_the_labels(self):
         # #88: without the status, removing the labels would lose the owner's
-        # answer; kept, the next tick runs the answered branch again. Other
-        # removals -- here PR 106's, and one on 105 without after_status -- go on.
+        # answer; kept, the next tick runs the answered branch again. Another
+        # PR's removal (106's) goes on.
         gh = FakeGh(prs={105: {p.NEEDS_HUMAN, p.ANSWERED}, 106: {p.NEEDS_HUMAN}}, responses=[
             (lambda a: a[0] == "api" and "/statuses/" in a[1], p.GhError("HTTP 403: no statuses right"))])
         plan = p.Plan(ops=[
             {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
              "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
-            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 106, "label": p.NEEDS_HUMAN},
         ])
         done = p.apply_ops(gh, plan, lint_fn=None)
@@ -113,8 +113,8 @@ class ApplyOpsTests(unittest.TestCase):
         plan = p.Plan(ops=[
             {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
              "context": p.ANSWERED_STATUS, "description": "comments=1 attempts=0"},
-            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 105, "label": p.ANSWERED, "after_status": True},
+            {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
         ])
         p.apply_ops(gh, plan, lint_fn=None)
         self.assertEqual(gh.labels_of[("pr", 105)], set())
@@ -155,8 +155,8 @@ class HandOffTests(unittest.TestCase):
 
         plan = p.Plan(ops=[
             {"op": "comment", "kind": "pr", "number": 105, "body": "@o handed over", "as_bot": True},
-            {"op": "post-status", "number": 105, "sha": "abc", "context": p.ANSWERED_STATUS,
-             "description": "comments=2 attempts=0"},
+            {"op": "post-status", "kind": "pr", "number": 105, "sha": "abc",
+             "context": p.ANSWERED_STATUS, "description": "comments=2 attempts=0"},
         ])
         p.apply_ops(Recorder(), plan, lint_fn=None)
         self.assertEqual(seen, [("comment", 105, True),
