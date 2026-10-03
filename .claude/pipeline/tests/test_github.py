@@ -122,7 +122,7 @@ class ApplyOpsTests(unittest.TestCase):
     def test_a_failed_answer_removal_skips_the_rest(self):
         # #98: a failed human:answered removal stops the removals after it, so
         # the PR keeps waiting on the owner with its rounds; 106's removal and
-        # 105's ordinary ops still run.
+        # 105's op without after_status still run.
         gh = FakeGh(prs={105: {p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1"}, 106: {p.NEEDS_HUMAN}},
                     responses=[(lambda a: a[:3] == ["pr", "edit", "105"] and p.ANSWERED in a,
                                 p.GhError("HTTP 502"))])
@@ -131,11 +131,12 @@ class ApplyOpsTests(unittest.TestCase):
             {"op": "remove-label", "kind": "pr", "number": 105, "label": "fix-round-1", "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 105, "label": p.NEEDS_HUMAN, "after_status": True},
             {"op": "remove-label", "kind": "pr", "number": 106, "label": p.NEEDS_HUMAN, "after_status": True},
+            {"op": "add-label", "kind": "pr", "number": 105, "label": "unrelated"},
         ])
         done = p.apply_ops(gh, plan, lint_fn=None)
         self.assertTrue(done[0].startswith("FAILED remove-label 105"), done)
         self.assertEqual(done[1:3], ["SKIPPED remove-label 105: an earlier answer write (remove-label) failed"] * 2)
-        self.assertEqual(gh.labels_of[("pr", 105)], {p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1"})
+        self.assertEqual(gh.labels_of[("pr", 105)], {p.NEEDS_HUMAN, p.ANSWERED, "fix-round-1", "unrelated"})
         self.assertEqual(gh.labels_of[("pr", 106)], set())
 
     def test_a_stale_answer_write_also_skips_the_rest(self):

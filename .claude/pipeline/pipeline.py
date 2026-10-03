@@ -1132,9 +1132,12 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
         if status == NEEDS_HUMAN and ANSWERED in labels:
             # The owner answered the question. Triage works the answer into the
             # issue, however often it has answered before: this is new input.
-            # human:answered first, then the status: if the removal fails, the
-            # status write is skipped and the issue stays as the owner left it,
-            # so the next tick runs this branch again (claim() refuses triage).
+            # human:answered first, then the status. If the removal fails, the
+            # status write is skipped and the issue keeps needs-human with
+            # human:answered, so the next tick runs this branch again. If the
+            # status write fails, the issue waits on the owner without
+            # human:answered. Either way claim() refuses the triage below.
+            # (triaged comes off regardless: it is not part of the answer.)
             plan.ops.append({"op": "remove-label", "kind": "issue", "number": n,
                              "label": ANSWERED, "why": "the owner answered",
                              "after_status": True})
@@ -2236,7 +2239,9 @@ def apply_ops(gh: Gh, plan: Plan, lint_fn) -> list[str]:
     failed: set[tuple] = set()
     # Targets whose answer writes stopped: the post-status, or one of the
     # after_status writes, failed. Their remaining after_status writes are
-    # skipped, so the owner's answer is either recorded whole or not at all.
+    # skipped. The answered branches take human:answered off first, so a stop
+    # leaves either the answered state as it was (the next tick tries again)
+    # or the item waiting on the owner -- never a stray human:answered.
     status_failed: dict[tuple, str] = {}
     for op in plan.ops:
         kind = op["op"]
@@ -2339,8 +2344,9 @@ def claim(gh: Gh, item: dict) -> str:
         if item.get("reason") == "owner-answered" and (
                 status_of(labels) != ESCALATED or ANSWERED in labels):
             # The answer was not recorded (apply_ops stopped): triage would
-            # start on an issue that still waits on the owner. The next tick
-            # runs the answered branch again.
+            # start on an issue that still waits on the owner. If
+            # human:answered is still on, the next tick runs the answered
+            # branch again; otherwise the issue waits on the owner.
             raise StaleState(f"#{n}: the owner's answer is not recorded yet")
         gh.edit_labels("issue", n, add=[WORKING])
         return f"claimed #{n} ({WORKING})"
