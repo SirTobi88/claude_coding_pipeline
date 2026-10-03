@@ -866,6 +866,24 @@ class OwnerAnswerTests(unittest.TestCase):
         self.assertEqual(sorted(o["label"] for o in ops(plan, "remove-label")), [p.ANSWERED, p.NEEDS_HUMAN])
         self.assertEqual(plan.dispatch, [])       # not the roadmap planner either
 
+    def test_an_answered_idea_removes_answered_first(self):
+        # #98: a failed first removal stops the second, so the idea is never
+        # left with a stray human:answered.
+        plan = run([issue(7, [p.IDEA, p.NEEDS_HUMAN, p.ANSWERED])])
+        removals = ops(plan, "remove-label")
+        self.assertEqual([o["label"] for o in removals], [p.ANSWERED, p.NEEDS_HUMAN])
+        self.assertTrue(all(o.get("after_status") for o in removals), removals)
+
+    def test_an_answered_issue_removes_answered_before_the_status(self):
+        # #98: if the removal fails, the status write is skipped and the next
+        # tick runs the answered branch again. triaged is not part of the answer.
+        plan = run([issue(5, [p.AGENT_TASK, p.NEEDS_HUMAN, p.ANSWERED, p.TRIAGED])])
+        mine = [(o["op"], o.get("label") or o.get("status"), bool(o.get("after_status")))
+                for o in plan.ops if o.get("number") == 5 and o["op"] in ("remove-label", "set-status")]
+        self.assertEqual(mine, [("remove-label", p.ANSWERED, True),
+                                ("set-status", p.ESCALATED, True),
+                                ("remove-label", p.TRIAGED, False)])
+
     def test_hand_offs_mention_the_owner_and_go_out_as_the_bot(self):
         plan = run([], [pr(105, checks="failure", labels=["fix-round-1", "fix-round-2"])],
                    owner_login="SirTobi88")
