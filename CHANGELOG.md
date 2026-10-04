@@ -21,8 +21,8 @@ Commit `d6f2b6f` — gh-reviewer acts only on this repository, whatever the envi
   reaches a command line.
 - The config directory is a fresh one per call, removed afterwards.
 - `gh-reviewer` now finds itself from a backslash path, as Windows hands it, and
-  reads the review body relative to where the caller stands, refusing a review
-  from outside the checkout.
+  refuses a review from outside the checkout; the review body is still read
+  relative to where the caller stands, though `gh` now runs in the root.
 
 ### Fixed
 - The script's directory no longer comes from the caller's PATH.
@@ -90,10 +90,10 @@ Commit `f13fc2d` — the tick holds outside its environment, unless switched off
 Commit `a3b1ab6` — gh-reviewer matches each call whole, not by a glob.
 
 ### Changed
-- `gh-reviewer` now pins the review's fields and the endpoint's segments: the body is a
-  relative `.md` path that never leaves the checkout, `commit_id` is hex, the
-  event is one of three, each exactly once; owner and repo admit no dot
-  segments or percent-encoding; and `pr view` takes the number alone.
+- `gh-reviewer` now pins the review's fields and the endpoint's segments: the
+  body is a relative `.md` path that never leaves the checkout, `commit_id` is
+  hex, the event is one of three, each exactly once; owner and repo admit no
+  dot segments or percent-encoding; and `pr view` takes the number alone.
 
 ## [Wave 16] - 2026-10-01
 
@@ -132,9 +132,9 @@ Commit `dd3ccf8` — fewer process spawns per Bash call and per edit.
 
 ### Changed
 - `bash_guard` now reads the agent type, kept to one line, and the command with
-  one `jq` call, skips its two greps unless the command names `gh-reviewer` or `setup-repo`,
-  and finds its own directory and the token name without subshells, taking a
-  call from 311 to 178 ms on Windows.
+  one `jq` call, skips its two greps unless the command names `gh-reviewer` or
+  `setup-repo`, and finds its own directory and the token name without
+  subshells, taking a call from 311 to 178 ms on Windows.
 - `allowlist_guard` now asks git once for root, prefix and branch, and
   `issue_scope.sh` does in the shell what it started `sed`, `tr`, `wc` and `cut`
   for, taking an edit from 472 to 363 ms, with the same exit code for every
