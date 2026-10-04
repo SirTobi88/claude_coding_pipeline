@@ -19,18 +19,13 @@ Commit `d6f2b6f` — gh-reviewer acts only on this repository, whatever the envi
   directory is the repository root, while proxies, certificates and Windows
   start-up variables still pass and the token is read with bash and never
   reaches a command line.
-- The config directory is now fresh per call and removed afterwards, because a
-  config left in a shared directory would be read.
+- The config directory is a fresh one per call, removed afterwards.
 - `gh-reviewer` now finds itself from a backslash path, as Windows hands it, and
   reads the review body relative to where the caller stands, refusing a review
   from outside the checkout.
 
 ### Fixed
-- `gh-reviewer` now acts only on this repository, whatever the environment
-  holds.
-- The script's directory and `mkdir` no longer come from the caller's PATH, and
-  the endpoint is written `[{]owner[}]` because Git Bash reads a bare `\{`
-  differently.
+- The script's directory no longer comes from the caller's PATH.
 
 ## [Wave 21] - 2026-10-02
 
@@ -57,10 +52,6 @@ Commit `5f19095` — bash_guard reads a newline as a command separator.
 ### Fixed
 - `bash_guard` now reads a newline as a command separator, so a command behind
   a newline is judged like one behind `;` or `&&`.
-- The guard now joins its lines once instead of appending to one string, which
-  was quadratic and ran a 9000-line heredoc into the hook's timeout, which
-  skips the guard, and it now recognizes `<<\EOF` and quoted delimiters with a
-  dash such as `<<'END-X'`.
 - The guard now checks every `git push` in a command, not only the first, so an
   allowed push no longer carries a forbidden one behind a newline, `;` or `&&`,
   and single-line commands with two pushes get stricter too, by the owner's
@@ -73,12 +64,10 @@ Commit `5904898` — record the first upgrade as a recipe and four lessons.
 ### Added
 - `docs/ADOPTING.md` and `docs/LESSONS.md` now record the first upgrade of an
   adopting project as a recipe and four lessons.
-
-### Changed
-- The upgrade recipe now moves the project-rules step ahead of the verbatim
-  copy, includes all issue templates and the `test_settings.py` USED exception
-  from section C, points at the trigger-move hazard, and runs `setup-repo` with
-  the owner's login.
+- The upgrade recipe puts the project-rules step ahead of the verbatim copy,
+  includes all issue templates and the `test_settings.py` USED exception from
+  section C, points at the trigger-move hazard, and runs `setup-repo` with the
+  owner's login.
 
 ## [Wave 18] - 2026-10-01
 
@@ -88,31 +77,23 @@ Commit `f13fc2d` — the tick holds outside its environment, unless switched off
 - The tick now holds outside its environment, unless that check is switched
   off.
 - A dry run now says plainly whether the tick would hold.
+- The environment check judges only the active login on the repository's host:
+  it asks `gh auth status` for `--active --hostname <host>` (`GH_HOST`, else
+  origin's host) and decides on what that prints.
 
 ### Fixed
-- The environment check now judges only the active login on the repository's
-  host, because `gh auth status` exits 1 when any account fails, an inactive
-  one included, and lists every host; it asks for `--active --hostname <host>`
-  (`GH_HOST`, else origin's host) and decides on what that prints, and
-  doctor's gh login line reads the same.
+- Doctor's gh login line now judges only the active login on the repository's
+  host, the same way the tick's check does.
 
 ## [Wave 17] - 2026-10-01
 
 Commit `a3b1ab6` — gh-reviewer matches each call whole, not by a glob.
 
 ### Changed
-- `gh-reviewer` now matches each call whole instead of by a glob.
-- It now pins the review's fields and the endpoint's segments: the body is a
+- `gh-reviewer` now pins the review's fields and the endpoint's segments: the body is a
   relative `.md` path that never leaves the checkout, `commit_id` is hex, the
   event is one of three, each exactly once; owner and repo admit no dot
   segments or percent-encoding; and `pr view` takes the number alone.
-
-### Fixed
-- `gh-reviewer` now requires each review field's flag as its own word, because
-  a flag glued to a value in one argument (`-F body=@/abs`) matched the
-  `$1 $2` pattern while only the second word was checked.
-- The `gh-reviewer` tests now find bash through `pipeline.bash_path`, because
-  on Windows PATH can resolve to WSL's bash, which cannot read the checkout.
 
 ## [Wave 16] - 2026-10-01
 
@@ -138,10 +119,9 @@ Commit `0297a56` — how to run a tick by hand in the right environment.
   before `/pipeline-tick`, and the traps an adoption hit: a token path that is
   a folder, bash not on PATH in PowerShell, a review started from the tick's
   window or the wrong directory, and a session older than the last `git pull`.
-- That section's `gh auth status` check now asks for `(GH_TOKEN)` as the active
-  account, so a listed but inactive keyring login no longer reads as a failure,
-  and doctor's gh login line must be OK too, since a non-fine-grained login is
-  only a warning there.
+- That section's `gh auth status` check asks for `(GH_TOKEN)` as the active
+  account, and doctor's gh login line must be OK too, since a non-fine-grained
+  login is only a warning there.
 - The section also says `git push` does not read `GH_TOKEN`, checks the token
   file exists before reading it, creates the PowerShell token folder first, and
   keeps a review by hand off PRs the tick has claimed.
@@ -151,8 +131,8 @@ Commit `0297a56` — how to run a tick by hand in the right environment.
 Commit `dd3ccf8` — fewer process spawns per Bash call and per edit.
 
 ### Changed
-- `bash_guard` now reads the agent type and the command with one `jq` call,
-  skips its two greps unless the command names `gh-reviewer` or `setup-repo`,
+- `bash_guard` now reads the agent type, kept to one line, and the command with
+  one `jq` call, skips its two greps unless the command names `gh-reviewer` or `setup-repo`,
   and finds its own directory and the token name without subshells, taking a
   call from 311 to 178 ms on Windows.
 - `allowlist_guard` now asks git once for root, prefix and branch, and
@@ -161,11 +141,6 @@ Commit `dd3ccf8` — fewer process spawns per Bash call and per edit.
   payload.
 - `scope_jq` now holds the CR fix for `jq` on Windows, and `pr_allowlist.sh`
   calls it instead of spelling the pipe out six times.
-
-### Fixed
-- `bash_guard` now keeps the agent type to one line in its single `jq` call,
-  because an `agent_type` holding a newline put its tail in front of the
-  command and let a reviewer-named payload past the bot gate.
 
 ## [Wave 13] - 2026-10-01
 
