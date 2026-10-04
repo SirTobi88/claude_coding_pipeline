@@ -8,6 +8,194 @@ waves, not releases.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Wave 22] - 2026-10-02
+
+Commit `d6f2b6f` — gh-reviewer acts only on this repository, whatever the environment holds.
+
+### Changed
+- `gh-reviewer` now runs `gh` with an environment of its own: every exported
+  variable is cleared in bash, PATH is fixed and `gh` is found on it, HOME and
+  `GH_CONFIG_DIR` are an empty directory of the checkout's own, and the working
+  directory is the repository root, while proxies, certificates and Windows
+  start-up variables still pass and the token is read with bash and never
+  reaches a command line.
+- The config directory is a fresh one per call, removed afterwards.
+- `gh-reviewer` now finds itself from a backslash path, as Windows hands it, and
+  refuses a review from outside the checkout; the review body is still read
+  relative to where the caller stands, though `gh` now runs in the root.
+
+### Fixed
+- The script's directory no longer comes from the caller's PATH.
+
+## [Wave 21] - 2026-10-02
+
+Commit `041ec9c` — a .claude/bin/ command is spelled relative only, pinned by a test.
+
+### Added
+- `test_settings.py` has a new test that a `gh-reviewer` call and a `pipeline`
+  call are allowed in their relative spelling and not as a Unix absolute path,
+  a Windows absolute path or with a `./` prefix.
+
+### Changed
+- `docs/AgentEnvironment.md` § Permissions now says a `.claude/bin/` command is
+  written exactly `.claude/bin/<name> …` from the repository root, never by an
+  absolute path and never with a `./` prefix, because the allow rules match
+  that text.
+- The *refused in practice* list in that section now includes the reviewer's
+  `gh-reviewer` call by its absolute path, from the first scheduled tick on
+  2026-10-01.
+
+## [Wave 20] - 2026-10-02
+
+Commit `5f19095` — bash_guard reads a newline as a command separator.
+
+### Fixed
+- `bash_guard` now reads a newline as a command separator, so a command behind
+  a newline is judged like one behind `;` or `&&`.
+- The guard now checks every `git push` in a command, not only the first, so an
+  allowed push no longer carries a forbidden one behind a newline, `;` or `&&`,
+  and single-line commands with two pushes get stricter too, by the owner's
+  decision.
+
+## [Wave 19] - 2026-10-01
+
+Commit `5904898` — record the first upgrade as a recipe and four lessons.
+
+### Added
+- `docs/ADOPTING.md` and `docs/LESSONS.md` now record the first upgrade of an
+  adopting project as a recipe and four lessons.
+- The upgrade recipe puts the project-rules step ahead of the verbatim copy,
+  includes all issue templates and the `test_settings.py` USED exception from
+  section C, points at the trigger-move hazard, and runs `setup-repo` with the
+  owner's login.
+
+## [Wave 18] - 2026-10-01
+
+Commit `f13fc2d` — the tick holds outside its environment, unless switched off.
+
+### Added
+- The tick now holds outside its environment, unless that check is switched
+  off.
+- A dry run now says plainly whether the tick would hold.
+- The environment check judges only the active login on the repository's host:
+  it asks `gh auth status` for `--active --hostname <host>` (`GH_HOST`, else
+  origin's host) and decides on what that prints.
+
+### Fixed
+- Doctor's gh login line now judges only the active login on the repository's
+  host, the same way the tick's check does.
+
+## [Wave 17] - 2026-10-01
+
+Commit `a3b1ab6` — gh-reviewer matches each call whole, not by a glob.
+
+### Changed
+- `gh-reviewer` now pins the review's fields and the endpoint's segments: the
+  body is a relative `.md` path that never leaves the checkout, `commit_id` is
+  hex, the event is one of three, each exactly once; owner and repo admit no
+  dot segments or percent-encoding; and `pr view` takes the number alone.
+
+## [Wave 16] - 2026-10-01
+
+Commit `4c34be3` — classify gh errors by stderr and HTTP status, not the message.
+
+### Changed
+- `GhError` now carries gh's own stderr and an `http_status` parsed from
+  `(HTTP 404)` or `HTTP 404:` in it, and `issue_state`, `protection_state` and
+  `enable_automerge` decide on those instead of on the message, which names the
+  request path.
+
+### Fixed
+- During a GitHub hiccup, an issue blocked by #404, #410 or #1410 now stays
+  blocked instead of turning ready.
+
+## [Wave 15] - 2026-10-01
+
+Commit `0297a56` — how to run a tick by hand in the right environment.
+
+### Added
+- `docs/AgentEnvironment.md` has a new section with the commands for bash and
+  PowerShell to run a tick by hand, what `gh auth status` and doctor must show
+  before `/pipeline-tick`, and the traps an adoption hit: a token path that is
+  a folder, bash not on PATH in PowerShell, a review started from the tick's
+  window or the wrong directory, and a session older than the last `git pull`.
+- That section's `gh auth status` check asks for `(GH_TOKEN)` as the active
+  account, and doctor's gh login line must be OK too, since a non-fine-grained
+  login is only a warning there.
+- The section also says `git push` does not read `GH_TOKEN`, checks the token
+  file exists before reading it, creates the PowerShell token folder first, and
+  keeps a review by hand off PRs the tick has claimed.
+
+## [Wave 14] - 2026-10-01
+
+Commit `dd3ccf8` — fewer process spawns per Bash call and per edit.
+
+### Changed
+- `bash_guard` now reads the agent type, kept to one line, and the command with
+  one `jq` call, skips its two greps unless the command names `gh-reviewer` or
+  `setup-repo`, and finds its own directory and the token name without
+  subshells, taking a call from 311 to 178 ms on Windows.
+- `allowlist_guard` now asks git once for root, prefix and branch, and
+  `issue_scope.sh` does in the shell what it started `sed`, `tr`, `wc` and `cut`
+  for, taking an edit from 472 to 363 ms, with the same exit code for every
+  payload.
+- `scope_jq` now holds the CR fix for `jq` on Windows, and `pr_allowlist.sh`
+  calls it instead of spelling the pipe out six times.
+
+## [Wave 13] - 2026-10-01
+
+Commit `d7c9f28` — the reviewer calls gh-reviewer by its relative path only.
+
+### Changed
+- The review skill's § 0 `dontAsk` rules now say to call the bot as
+  `.claude/bin/gh-reviewer`, from the repository root, never by an absolute
+  path, because the allow rule `Bash(.claude/bin/gh-reviewer *)` matches only
+  the relative form and the first scheduled tick's reviewer was refused on the
+  absolute path.
+
+## [Wave 12] - 2026-10-01
+
+Commit `3578e84` — drop the Write(...) allow rules, Edit rules cover every file tool.
+
+### Changed
+- `test_settings.py` now looks at `Edit(...)` rules only for its two file-rule
+  tests and has a new test that fails on any `Write(...)` allow rule.
+
+### Fixed
+- `.claude/settings.json` no longer has the `Write(/.claude/worktrees/**)` and
+  `Write(/.pipeline-tmp/**)` allow rules, because Claude Code matches file
+  permissions on `Edit(path)` rules only, for every file-editing tool, and
+  warned about both at the start of every tick.
+
+## [Wave 11] - 2026-10-01
+
+Commit `4b1810e` — one helper per repeated gh call, one scope parse per issue per run.
+
+### Changed
+- `Gh.paginate`, `open_issues_labelled` and `collaborator_permission` now
+  replace five, three and two hand-written copies of the same `gh` call, and
+  `LintResult.clean`, `LintResult.blocked_by`, `bot_reviews_at`,
+  `dispatch_label` and `runs_by_kind` replace the rest.
+- `cmd_run` now applies the ops in one place, and `cached_allowlist` parses
+  each issue body once per run, where `decide()` and the lint asked for it up to
+  four times, each a bash start.
+- Five unread constants and the test-only `rollup_state()` are removed, and
+  `FakeGh` now takes a canned answer that is a function of the args, so
+  `CallableFakeGh` goes.
+- The plan is unchanged: a dry run makes the same plan as the previous
+  version's against the same GitHub state.
+
+## [Wave 10] - 2026-10-01
+
+Commit `9b68f2d` — issue-lint starts no runner for issues without agent-task.
+
+### Changed
+- issue-lint no longer starts a runner for an issue without `agent-task`, since
+  every tick rewrites the status issue and each rewrite started a runner that
+  only printed "skipped".
+- A closed issue of any kind still starts the relint, and an issue that gains
+  `agent-task` later fires `labeled` with it.
+
 ## [Wave 9] - 2026-10-01
 
 Commit `cb7111d` — a done-check the reviewer cannot run goes to the owner.
