@@ -8,6 +8,197 @@ waves, not releases.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Wave 35] - 2026-10-03
+
+Commit `c9ba6ac` — a failed answer write stops the target's remaining answer writes.
+
+### Changed
+- The idea and agent-task answered branches now take `human:answered` off first
+  and mark their writes `after_status`.
+- `claim()` now refuses an owner-answered triage until the answer is recorded.
+
+### Fixed
+- `apply_ops()` now stops a target's `after_status` writes once one of them
+  fails, not only when the answer status fails.
+- Every failed answer write now leaves either the untouched answered state or an
+  item waiting on the owner, never a stray `human:answered`.
+
+## [Wave 34] - 2026-10-03
+
+Commit `e6974f7` — the answered branch takes human:answered off first on purpose.
+
+### Added
+- A new test, `OwnerAnswerTests.test_answered_comes_off_first_and_needs_human_last`,
+  pins that a PR's label removals start with `human:answered`, end with
+  `status:needs-human` and have the round labels in between.
+
+### Changed
+- The answered branch of `decide()` now removes labels in an explicit order,
+  `human:answered` first, then the round labels (sorted), then
+  `status:needs-human` last, and a comment says why.
+- That order means a run that stops between removals leaves the PR waiting on
+  the owner, who is asked again, and never leaves a stray `human:answered` that
+  would answer the next question on that PR by itself. A single removal that
+  fails does not stop the others; that case is #98.
+- Before, the order held only because `sorted()` happens to put `human:answered`
+  before `status:needs-human`.
+
+### Fixed
+- Two test corrections from the review of #95: a comment on
+  `test_a_failed_answer_status_keeps_the_labels` no longer claims an op the test
+  does not have, and a `post-status` op in the hand-off test is now built with
+  `"kind": "pr"`, as `decide()` has emitted it since #88.
+
+## [Wave 33] - 2026-10-02
+
+Commit `c777523` — the owner's answer on a PR survives a failed answered-status write.
+
+### Fixed
+- The answered status is now queued before the label removals, and `apply_ops`
+  skips those removals (`after_status`) when the status write failed, so the
+  labels stay and the next tick runs the answered branch again.
+
+## [Wave 32] - 2026-10-02
+
+Commit `89bc6c2` — doctor and preflight report awk, tr, sed or grep missing.
+
+### Added
+- `doctor` and `preflight` now report `awk`, `tr`, `sed` or `grep` missing.
+- They ask the guard's own bash (`bash_path()`) with `command -v`, not Python's
+  `which`, which looks in PowerShell's PATH, where Git's `awk`, `tr`, `sed` and
+  `grep` are not, so a healthy Windows machine would show four failing lines.
+- `guard_tools_missing()` returns `None` when the bash lookup exits non-zero or
+  times out, rather than reading its empty output as all four tools found.
+
+## [Wave 31] - 2026-10-02
+
+Commit `a1022e0` — one comment-only bot review hands the PR to the owner.
+
+### Changed
+- `decide()` now treats every comment-only review by the bot as a NEEDS_HUMAN
+  verdict: when the PR has no `status:needs-human`, it adds the label, posts the
+  bot comment that mentions the owner, and lists the PR under *Needs you*.
+- Nothing more is dispatched on that PR at that head.
+- `docs/Pipeline.md` § Pull requests now says a comment-only review at a commit
+  goes to the owner, and that the tick adds `status:needs-human` if the reviewer
+  could not.
+
+## [Wave 30] - 2026-10-02
+
+Commit `a54a4dd` — the guard refuses when a tool it needs is missing or silent.
+
+### Fixed
+- The guard now checks at startup that `tr`, `sed`, `grep` and `awk` exist, and
+  refuses an empty normalized command.
+- Its `awk` pass now says `P` when nothing is refused, so an `awk` that prints
+  nothing refuses too.
+- A `tr` that empties jq's output now refuses, and a CR after `awk`'s verdict is
+  dropped. jq's carriage returns are still dropped with `tr`, which is linear:
+  stripping them in bash is quadratic in bash 3.2 under UTF-8, and a 45 KB CRLF
+  command took over a minute, past the hook's timeout, which skips the guard.
+
+## [Wave 29] - 2026-10-02
+
+Commit `93b40ff` — a finding wins over a refused command, and a refusal after the verdict is reported.
+
+### Changed
+- In `github-pr-review` § 0, the refused-command bullet now says "unless
+  something else already asks for changes" before NEEDS_HUMAN, so a known bug
+  goes to a fix pass.
+- That bullet gains a closing sentence: a command refused after the verdict is
+  posted, such as the label edit after a COMMENT or enabling auto-merge after an
+  APPROVE, is not a new verdict, so the reviewer posts nothing more and names the
+  command in its report.
+- § 9's verdict table now ends the NEEDS_HUMAN row "or a command § 0 found
+  refused when no § 8b or § 8d finding asks for changes".
+- `docs/AgentEnvironment.md` § Permissions gains a sentence saying the same, and
+  that the tick lists such a command under *Needs you*.
+- `.claude/commands/pipeline-tick.md` § 3 now lists under *Needs you* every
+  command an agent's report names as refused.
+
+## [Wave 28] - 2026-10-02
+
+Commit `fce145a` — gh-reviewer hands gh a private copy of the checked body.
+
+### Changed
+- `gh-reviewer` now requires the resolved review body to be a `.md` file itself.
+- `gh` now reads a private copy of the body in the per-call directory instead of
+  the resolved file, and a swap between the checks and the copy is still posted,
+  which the script's comments now say.
+- A missing `realpath` now says so and exits 3.
+- `pr view` is no longer a call `gh-reviewer` runs, since the skill reads with
+  plain `gh`.
+
+## [Wave 27] - 2026-10-02
+
+Commit `81d0ce5` — refuse a push the guard could not check.
+
+### Fixed
+- A push is now refused when the guard could not check it: an `awk` that failed
+  or was missing left the verdict empty and the push went through unchecked,
+  a force push to main included.
+- `push_refuse` now has a default arm, so an `awk` that exits 0 but prints
+  something other than `F`, `X` or `A` refuses too.
+
+## [Wave 26] - 2026-10-02
+
+Commit `634e087` — the review skill's reads go through plain gh.
+
+### Changed
+- The preamble of `github-pr-review` no longer says reads "may use either"; it
+  now says "Reads use plain `gh`: the wrapper refuses every call this skill does
+  not make."
+- The reason is that since #21, #59 and #63 `gh-reviewer` runs only the review's
+  own calls, so a read through it would be refused.
+
+## [Wave 25] - 2026-10-02
+
+Commit `77ae6e5` — the reviewer answers NEEDS_HUMAN for any refused command the review needs.
+
+### Changed
+- `github-pr-review` § 0 has a new bullet: any other command the review needs
+  that is refused even in plain form leads to NEEDS_HUMAN, naming the command,
+  for example `gh run view --log`, `.claude/bin/pipeline checks` or a
+  `gh-reviewer` write.
+- If the refused command is the one that posts the verdict, the reviewer
+  releases and names the command in its report.
+- § 9's verdict table: the NEEDS_HUMAN row adds "or a command § 0 found refused".
+- `docs/AgentEnvironment.md` § Permissions: the end of the *A refused command*
+  bullet now covers any command the review needs, not only a done-check.
+
+## [Wave 24] - 2026-10-02
+
+Commit `f927bc8` — gh-reviewer takes only full SHAs and a body file that resolves inside the checkout.
+
+### Added
+- `test_gh_reviewer.py` has two new tests: `test_only_full_shas`, and
+  `test_the_body_must_be_a_regular_file_inside_the_checkout`.
+- Its in-checkout symlink case is for macOS and Linux: on Windows, Python makes
+  a native symlink whose `C:\` target MSYS's `realpath` does not map to `/c/`,
+  so the wrapper refuses it, the safe direction.
+
+### Changed
+- `gh-reviewer` now accepts `commit_id` and `--match-head-commit` only as
+  exactly 40 lowercase hex digits.
+- The review body, taken relative to where the caller stands and resolved with
+  `realpath`, must now be a regular file under the wrapper's own checkout root,
+  otherwise the wrapper exits 4 and nothing reaches `gh`, which covers a missing
+  file, a directory and a `.md` symlink pointing out of the checkout.
+- `gh` is now given the resolved file, relative to the root, so a symlink inside
+  the checkout is read through to its target.
+
+## [Wave 23] - 2026-10-02
+
+Commit `3c37d13` — the push check gives main's verdicts in one linear awk pass.
+
+### Fixed
+- The push check now gives its verdicts in one linear `awk` pass over the
+  command's words, instead of re-reading up to the next separator for every
+  `git push`; only its cost changes.
+- The per-push rule is unchanged word for word: 6000 random commands give the
+  same verdict as main's guard, and 6000 push mentions take 0.27 s instead of
+  minutes.
+
 ## [Wave 22] - 2026-10-02
 
 Commit `d6f2b6f` — gh-reviewer acts only on this repository, whatever the environment holds.
