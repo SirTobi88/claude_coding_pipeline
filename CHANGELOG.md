@@ -36,9 +36,10 @@ Commit `e6974f7` — the answered branch takes human:answered off first on purpo
 - The answered branch of `decide()` now removes labels in an explicit order,
   `human:answered` first, then the round labels (sorted), then
   `status:needs-human` last, and a comment says why.
-- That order means a later failed removal leaves the PR waiting on the owner,
-  who is asked again, and never leaves a stray `human:answered` that would
-  answer the next question on that PR by itself.
+- That order means a run that stops between removals leaves the PR waiting on
+  the owner, who is asked again, and never leaves a stray `human:answered` that
+  would answer the next question on that PR by itself. A single removal that
+  fails does not stop the others; that case is #98.
 - Before, the order held only because `sorted()` happens to put `human:answered`
   before `status:needs-human`.
 
@@ -63,23 +64,15 @@ Commit `89bc6c2` — doctor and preflight report awk, tr, sed or grep missing.
 
 ### Added
 - `doctor` and `preflight` now report `awk`, `tr`, `sed` or `grep` missing.
-
-### Changed
-- They now ask the guard's own bash (`bash_path()`) with `command -v`, because
-  Python's `which` looks in PowerShell's PATH, where Git's `awk`, `tr`, `sed` and
-  `grep` are not, so a healthy Windows machine showed four failing lines.
-
-### Fixed
-- `guard_tools_missing()` now returns `None` when the bash lookup exits non-zero
-  or times out, instead of reading its empty output as all four tools found.
+- They ask the guard's own bash (`bash_path()`) with `command -v`, not Python's
+  `which`, which looks in PowerShell's PATH, where Git's `awk`, `tr`, `sed` and
+  `grep` are not, so a healthy Windows machine would show four failing lines.
+- `guard_tools_missing()` returns `None` when the bash lookup exits non-zero or
+  times out, rather than reading its empty output as all four tools found.
 
 ## [Wave 31] - 2026-10-02
 
 Commit `a1022e0` — one comment-only bot review hands the PR to the owner.
-
-### Added
-- Two new tests pin that one comment-only bot review at the head, and a new one
-  after the owner's answer, each go to the owner with no dispatch.
 
 ### Changed
 - `decide()` now treats every comment-only review by the bot as a NEEDS_HUMAN
@@ -99,11 +92,10 @@ Commit `a54a4dd` — the guard refuses when a tool it needs is missing or silent
   refuses an empty normalized command.
 - Its `awk` pass now says `P` when nothing is refused, so an `awk` that prints
   nothing refuses too.
-- The carriage returns in jq's output are dropped with `tr` again, because stripping them in
-  bash is quadratic in bash 3.2 under UTF-8: a 45 KB CRLF command took over a
-  minute, past the hook's timeout, which skips the guard.
 - A `tr` that empties jq's output now refuses, and a CR after `awk`'s verdict is
-  dropped.
+  dropped. jq's carriage returns are still dropped with `tr`, which is linear:
+  stripping them in bash is quadratic in bash 3.2 under UTF-8, and a 45 KB CRLF
+  command took over a minute, past the hook's timeout, which skips the guard.
 
 ## [Wave 29] - 2026-10-02
 
@@ -130,8 +122,8 @@ Commit `fce145a` — gh-reviewer hands gh a private copy of the checked body.
 
 ### Changed
 - `gh-reviewer` now requires the resolved review body to be a `.md` file itself.
-- `gh` now reads a copy of the body in the per-call directory instead of the
-  caller's path, and a swap between the checks and the copy is still posted,
+- `gh` now reads a private copy of the body in the per-call directory instead of
+  the resolved file, and a swap between the checks and the copy is still posted,
   which the script's comments now say.
 - A missing `realpath` now says so and exits 3.
 - `pr view` is no longer a call `gh-reviewer` runs, since the skill reads with
@@ -147,7 +139,6 @@ Commit `81d0ce5` — refuse a push the guard could not check.
   a force push to main included.
 - `push_refuse` now has a default arm, so an `awk` that exits 0 but prints
   something other than `F`, `X` or `A` refuses too.
-- The refusal message no longer points at a doc that does not mention `awk`.
 
 ## [Wave 26] - 2026-10-02
 
@@ -182,6 +173,9 @@ Commit `f927bc8` — gh-reviewer takes only full SHAs and a body file that resol
 ### Added
 - `test_gh_reviewer.py` has two new tests: `test_only_full_shas`, and
   `test_the_body_must_be_a_regular_file_inside_the_checkout`.
+- Its in-checkout symlink case is for macOS and Linux: on Windows, Python makes
+  a native symlink whose `C:\` target MSYS's `realpath` does not map to `/c/`,
+  so the wrapper refuses it, the safe direction.
 
 ### Changed
 - `gh-reviewer` now accepts `commit_id` and `--match-head-commit` only as
@@ -192,21 +186,15 @@ Commit `f927bc8` — gh-reviewer takes only full SHAs and a body file that resol
   file, a directory and a `.md` symlink pointing out of the checkout.
 - `gh` is now given the resolved file, relative to the root, so a symlink inside
   the checkout is read through to its target.
-- The in-checkout symlink test is for macOS and Linux: on Windows, Python makes
-  a native symlink whose `C:\` target MSYS's `realpath` does not map to `/c/`,
-  so the wrapper refuses it, the safe direction.
 
 ## [Wave 23] - 2026-10-02
 
 Commit `3c37d13` — the push check gives main's verdicts in one linear awk pass.
 
 ### Fixed
-- The push check now judges every `git push` in one linear `awk` pass over the
-  command's words, instead of a rework that kept changing what was refused.
-- A push runs from `git push` to the next separator, glued or not, and inside it
-  `git` and `push` are only more refspecs, as git reads them.
-- `ls;git push` and `a&&git push` are now two commands, `2>&1`, `>&2` and `&>`
-  are redirects and not separators, and `/usr/bin/git` and `\git` start a push.
+- The push check now gives its verdicts in one linear `awk` pass over the
+  command's words, instead of re-reading up to the next separator for every
+  `git push`; only its cost changes.
 - The per-push rule is unchanged word for word: 6000 random commands give the
   same verdict as main's guard, and 6000 push mentions take 0.27 s instead of
   minutes.
