@@ -41,6 +41,14 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.load('{"limits": {"max_fix_rounds": "two"}}')
 
+    def test_a_retired_limit_is_a_warning(self):
+        # max_comment_only_reviews was retired (docs/ROADMAP.md step 3): an
+        # adopter's config that still sets it loads, with one warning naming it.
+        cfg, warnings = self.load('{"limits": {"max_comment_only_reviews": 2}}')
+        self.assertNotIn("max_comment_only_reviews", cfg["limits"])
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("max_comment_only_reviews", warnings[0])
+
 
 class PauseTests(unittest.TestCase):
     def test_a_paused_tick_still_reports_and_turns_auto_merge_off(self):

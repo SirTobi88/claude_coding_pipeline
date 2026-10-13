@@ -82,7 +82,6 @@ DEFAULT_CONFIG = {
         "max_fix_rounds": 2,
         "max_conflict_rounds": 2,
         "max_review_attempts": 2,
-        "max_comment_only_reviews": 2,
         "stale_in_progress_hours": 6,
         "stale_working_hours": 4,
         "stale_waiting_hours": 12,
@@ -214,7 +213,6 @@ class Limits:
     max_fix_rounds: int
     max_conflict_rounds: int
     max_review_attempts: int
-    max_comment_only_reviews: int
     stale_in_progress: timedelta
     stale_working: timedelta
     stale_waiting: timedelta
@@ -224,7 +222,7 @@ class Limits:
         return cls(**{k: int(raw[k]) for k in (
             "max_parallel_implement", "max_parallel_review", "max_parallel_fix",
             "max_parallel_triage", "max_dispatch_per_tick", "max_agent_runs_per_day", "max_fix_rounds",
-            "max_conflict_rounds", "max_review_attempts", "max_comment_only_reviews")},
+            "max_conflict_rounds", "max_review_attempts")},
             stale_in_progress=timedelta(hours=float(raw["stale_in_progress_hours"])),
             stale_working=timedelta(hours=float(raw["stale_working_hours"])),
             stale_waiting=timedelta(hours=float(raw["stale_waiting_hours"])))
@@ -1030,11 +1028,6 @@ def decide(snap: dict, allowlist_fn, lint_fn) -> Plan:
             pr_to_owner(n, "the reviewer asks you a question",
                         "the reviewer answered this head with a comment and no verdict "
                         "(NEEDS_HUMAN); its question is in that review.")
-            continue
-        if comment_only >= lim.max_comment_only_reviews:
-            pr_to_owner(n, f"no verdict after {comment_only} reviews",
-                        f"the reviewer answered this head {comment_only} times with a comment "
-                        "and no verdict.")
             continue
         attempts = int(pr.get("reviewAttempts") or 0)
         if attempts - int(pr.get("answeredAttempts") or 0) >= lim.max_review_attempts:
