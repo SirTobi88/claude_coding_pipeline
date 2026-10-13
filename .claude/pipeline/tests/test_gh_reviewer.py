@@ -38,6 +38,9 @@ ALLOWED = [
      "-f", "event=REQUEST_CHANGES", "-F", "body=@.pipeline-tmp/review-105.md"],
     ["api", "repos/{owner}/{repo}/pulls/105/reviews",
      "-f", "commit_id=" + SHA, "-f", "event=COMMENT", "-F", "body=@.pipeline-tmp/review-105.md"],
+    ["api", "repos/{owner}/{repo}/pulls/105/reviews",
+     "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
+     "-F", "body=@.claude/worktrees/review-105/.pipeline-tmp/review-105.md"],
     ["pr", "merge", "105", "--auto", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "edit", "105", "--add-label", "status:needs-human"],
@@ -305,6 +308,12 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         self.assertEqual(from_sub, "report .claude/worktrees/review-105/.pipeline-tmp/review-105.md")
         from_root = self.seen(self.call(self.REVIEW))["body-content"]
         self.assertEqual(from_root, "report .pipeline-tmp/review-105.md")
+
+    def test_the_report_in_the_review_worktree_is_named_from_the_root(self):
+        # github-pr-review § 9: the reviewer writes its report inside its review
+        # worktree and submits from the repository root, naming it by that path.
+        seen = self.seen(self.call(self.review(".claude/worktrees/review-105/.pipeline-tmp/review-105.md")))
+        self.assertEqual(seen["body-content"], "report .claude/worktrees/review-105/.pipeline-tmp/review-105.md")
 
     def test_gh_reads_a_private_copy_of_the_body(self):
         # #73: gh never opens the caller's path again, so a file swapped after

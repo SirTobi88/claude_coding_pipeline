@@ -240,7 +240,10 @@ APPROVE.
 
 ## 9. The verdict — one review, as the bot, pinned to the commit
 
-Write the report to `.pipeline-tmp/review-<N>.md` (gitignored scratch space). First line `**Verdict: <VERDICT>**`, then: what
+Write the report to `.claude/worktrees/review-<N>/.pipeline-tmp/review-<N>.md`
+-- inside the review worktree (§ 1), gitignored there -- with the Write tool.
+Not the root's `.pipeline-tmp/`: a session bound to a worktree may not write
+into another checkout. First line `**Verdict: <VERDICT>**`, then: what
 you checked (§ 2–7, one line each), each finding with its route, what you fixed,
 follow-up issues filed.
 
@@ -260,8 +263,11 @@ the literal 40-character value, not a variable:
 
 ```bash
 .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/<N>/reviews" \
-  -f commit_id=<sha> -f event=<EVENT> -F body=@.pipeline-tmp/review-<N>.md
+  -f commit_id=<sha> -f event=<EVENT> -F body=@.claude/worktrees/review-<N>/.pipeline-tmp/review-<N>.md
 ```
+
+Still from the repository root, as the intro says: the path names the report
+inside the worktree, the wrapper is the root's.
 
 | Verdict | `event` | Then |
 |---|---|---|
