@@ -165,7 +165,8 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         # The review bodies the calls name: real regular files in the checkout,
         # since the wrapper resolves each one before gh may read it (#63).
         for body in ("x.md", ".pipeline-tmp/review-105.md",
-                     ".claude/worktrees/review-105/.pipeline-tmp/review-105.md"):
+                     ".claude/worktrees/review-105/.pipeline-tmp/review-105.md",
+                     ".claude/worktrees/agent-108-x/.pipeline-tmp/review-105.md"):
             path = cls.root / body
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("report " + body + "\n", encoding="utf-8")
@@ -314,9 +315,6 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         # writes its report there and submits from the repository root, naming
         # it by that path. The guard side is in .claude/hooks/test/run_tests.sh.
         body = ".claude/worktrees/agent-108-x/.pipeline-tmp/review-105.md"
-        path = self.root / body
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("report " + body + "\n", encoding="utf-8")
         seen = self.seen(self.call(self.review(body)))
         self.assertEqual(seen["body-content"], "report " + body)
 
