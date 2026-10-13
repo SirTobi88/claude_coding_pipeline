@@ -192,6 +192,11 @@ files this PR touches*. Allowed when all hold:
 - the fix decides nothing the author would reasonably decide differently;
 - it is a defect in this change.
 
+Reviewers run with their session at the repository root, as the tick's do. A
+session bound to another worktree may not write into `review-<N>` (the
+allowlist guard refuses it): such a reviewer routes the fix to § 8b instead
+and says why in the verdict.
+
 ```bash
 git -C .claude/worktrees/review-<N> add <each file you changed>
 git -C .claude/worktrees/review-<N> status --short          # nothing else modified or staged
