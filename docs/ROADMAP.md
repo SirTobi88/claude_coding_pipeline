@@ -28,7 +28,7 @@ showed missing is written down in `docs/LESSONS.md` and fixed.
 ## Steps
 
 1. ~~**Catch up the changelog.**~~ -- done (#103, #104). `CHANGELOG.md`
-   stopped at Wave 9 (2026-10-01); one entry per merged wave since.
+   stopped at Wave 9 (2026-10-01); it now has entries for Waves 10 to 35.
 2. ~~**Reviewer reports without detours.**~~ -- done (#106, #115). The
    reviewer writes its report into the `.pipeline-tmp/` of the checkout its
    session works in (the root, or its own worktree; never `review-<N>`, the
