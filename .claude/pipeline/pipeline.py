@@ -1853,6 +1853,11 @@ def tick_environment(env=os.environ, run=subprocess.run, gh: str = "gh") -> list
 # command when one is missing (.claude/hooks/bash_guard.sh, #78).
 GUARD_TOOLS = ("awk", "tr", "sed", "grep")
 
+# The other tools doctor checks by name. Their doc twin is the table in
+# docs/AgentEnvironment.md § The machine that runs the pipeline; a test holds
+# the two together.
+MACHINE_TOOLS = ("gh", "git", "jq")
+
 
 def guard_tools_missing(run=subprocess.run, bash=bash_path) -> list[str] | None:
     """Which of GUARD_TOOLS the guard's own bash cannot find; None when there
@@ -2097,7 +2102,7 @@ def doctor_report(gh: "Gh", root: Path = REPO_ROOT, which=shutil.which,
     def add(level: str, name: str, detail: str) -> None:
         out.append((level, name, detail))
 
-    for tool in ("gh", "git", "jq"):
+    for tool in MACHINE_TOOLS:
         add("ok" if which(tool) else "fail", f"tool: {tool}",
             "on PATH" if which(tool) else "missing -- docs/AgentEnvironment.md")
     add("ok" if bash_path() else "fail", "tool: bash", bash_path() or "no usable bash")
