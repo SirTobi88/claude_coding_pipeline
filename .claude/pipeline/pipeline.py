@@ -1892,9 +1892,13 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
         problems.append(".claude/settings.local.json exists: it can widen permissions or turn off "
                         "hooks for every tick and agent -- check it holds only what you meant "
                         "(docs/AgentEnvironment.md § Permissions)")
-    if not which("jq"):
-        problems.append("jq not on PATH: the allowlist guard and the bash guard cannot read "
-                        "their input (docs/AgentEnvironment.md)")
+    why = {"gh": "the tick cannot read or write GitHub",
+           "git": "the tick cannot sync its checkout, and agents cannot branch or push",
+           "jq": "the allowlist guard and the bash guard cannot read their input"}
+    for tool in MACHINE_TOOLS:
+        if not which(tool):
+            problems.append(f"{tool} not on PATH: {why.get(tool, 'the pipeline needs it')} "
+                            "(docs/AgentEnvironment.md)")
     missing = guard_tools_missing(run=run, bash=bash)
     if missing:
         problems.append(f"{', '.join(missing)} not found by the guard's bash: "
@@ -1902,6 +1906,9 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
                         "(docs/AgentEnvironment.md)")
     if not bash():
         problems.append("bash not found: the hooks and the allowlist parser cannot run")
+
+    if not which("git"):
+        return problems
 
     def git(*args: str) -> str | None:
         proc = run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8")
