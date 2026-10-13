@@ -1273,6 +1273,30 @@ class PreflightTests(unittest.TestCase):
         for present in ("awk", "sed"):
             self.assertNotIn(present, named[0].split(":")[0])
 
+    def test_every_machine_tool_is_reported_when_missing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            problems = p.preflight(Path(d), run=self.fake_git(), which=lambda _: None,
+                                   bash=lambda: "/bin/bash")
+        for tool in p.MACHINE_TOOLS:
+            self.assertTrue(any(x.startswith(f"{tool} not on PATH") for x in problems), (tool, problems))
+        # jq keeps its own reason: without it the guards cannot read their input.
+        self.assertTrue(any(x.startswith("jq not on PATH: the allowlist guard and the bash guard "
+                                         "cannot read their input") for x in problems), problems)
+
+    def test_missing_git_is_a_problem_not_a_crash(self):
+        import tempfile
+        git = self.fake_git()
+
+        def run(args, **kw):
+            if args[0] == "git":
+                raise FileNotFoundError("git")
+            return git(args, **kw)
+        with tempfile.TemporaryDirectory() as d:
+            problems = p.preflight(Path(d), run=run, which=lambda t: None if t == "git" else "/usr/bin/" + t,
+                                   bash=lambda: "/bin/bash")
+        self.assertTrue(any(x.startswith("git not on PATH") for x in problems), problems)
+
     def test_the_text_tools_are_asked_of_the_guards_bash(self):
         # A real lookup through this machine's bash: all four are there.
         self.assertEqual(p.guard_tools_missing(), [])
