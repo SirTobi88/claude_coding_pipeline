@@ -254,7 +254,8 @@ template does not do that yet.
    Its `setup_problems` also name what is wrong with the machine the tick runs
    on and that no pull request would show: a `.claude/settings.local.json`,
    uncommitted changes in the tick's checkout, a checkout not on the default
-   branch, a missing `jq` or bash.
+   branch, a missing tool (`docs/AgentEnvironment.md` § *The machine that
+   runs the pipeline*).
 2. Spawns one agent per dispatch item, in parallel, and waits for them.
 3. Reports: what was dispatched, what came back, and everything waiting on the
    owner.
@@ -335,11 +336,11 @@ an hour for its review.
 One time, in this order. `docs/ADOPTING.md` walks through it for an existing
 project.
 
-**1. Tools on the machine that runs the tick.** `gh` (authenticated with the
-agents' token, step 2), `jq`, Python ≥ 3.9, bash, `awk`, `tr`, `sed`, `grep`,
-and the project's own toolchain. See
-`docs/AgentEnvironment.md`. After installing, **fully quit and reopen** the
-Claude app — a running app keeps its old `PATH`.
+**1. Tools on the machine that runs the tick.** Those in
+`docs/AgentEnvironment.md` § *The machine that runs the pipeline* (`gh`
+authenticated with the agents' token, step 2), and the project's own
+toolchain. After installing, **fully quit and reopen** the Claude app — a
+running app keeps its old `PATH`.
 
 **2. The agents' token.** The agents must not hold the owner's full
 credentials: with them, any agent could remove branch protection, and every

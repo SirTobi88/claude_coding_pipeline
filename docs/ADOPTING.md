@@ -83,8 +83,9 @@ the definition of done.
 
 Follow `docs/Pipeline.md` § *Setup*:
 
-1. Tools on the pipeline machine: `gh`, `jq`, Python ≥ 3.9, bash, `awk`,
-   `tr`, `sed`, `grep`, your toolchain. Fully restart the Claude app afterwards.
+1. Tools on the pipeline machine: those in `docs/AgentEnvironment.md`
+   § *The machine that runs the pipeline*, and your toolchain. Fully restart
+   the Claude app afterwards.
 2. The agents' token: fine-grained, this repository only,
    Administration read-only, no Administration write and no Workflows
    permission, as the only GitHub credential the tick's OS user holds.

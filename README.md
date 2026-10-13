@@ -125,9 +125,9 @@ already running finish (`docs/Pipeline.md` § *Holding, pausing, stopping*).
   hold because the agents cannot change them, as long as this token is the
   only GitHub credential the tick's OS user holds (`docs/Pipeline.md`
   § *What binds an agent, and what only guides it*).
-- On the machine running the tick: `gh` (authenticated with that token), `jq`,
-  Python ≥ 3.9, bash (Git Bash on Windows), `awk`, `tr`, `sed`, `grep`, and the
-  project's toolchain.
+- On the machine running the tick: the tools in `docs/AgentEnvironment.md`
+  § *The machine that runs the pipeline* (`gh` authenticated with that token),
+  and the project's toolchain.
 
 ---
 
