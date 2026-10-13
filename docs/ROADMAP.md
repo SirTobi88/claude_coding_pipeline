@@ -27,23 +27,19 @@ showed missing is written down in `docs/LESSONS.md` and fixed.
 
 ## Steps
 
-1. **Catch up the changelog.** `CHANGELOG.md` stops at Wave 9 (2026-10-01).
-   Add one entry per merged wave since, read from each merge commit's message.
-2. **Reviewer reports without detours.** A reviewer whose session is bound to
-   another worktree cannot write `.pipeline-tmp/` at the repository root (the
-   allowlist guard refuses the cross-checkout write), and every review since
-   #59 worked around it. Make the review skill write its report into its own
-   review worktree's `.pipeline-tmp/` and submit from there, now that
-   `gh-reviewer` resolves the body against the caller's directory.
-3. **Retire `max_comment_only_reviews`.** Since #81 one comment-only bot review
-   hands the PR to the owner, so the limit can no longer fire: remove it from
-   `Limits`, `config.json` and the limits table in `docs/Pipeline.md`.
-4. **One source for the machine's tool list.** gh, git, jq, bash, awk, tr, sed
-   and grep are listed in `docs/AgentEnvironment.md`, `docs/ADOPTING.md`,
-   `docs/Pipeline.md`, `README.md`, `doctor_report()`, `preflight()` and
-   `bash_guard.sh`. Name the list once (`GUARD_TOOLS` and the doctor tools in
-   `pipeline.py`, the table in `docs/AgentEnvironment.md`) and make the other
-   docs point at it.
+1. ~~**Catch up the changelog.**~~ -- done (#103, #104). `CHANGELOG.md`
+   stopped at Wave 9 (2026-10-01); one entry per merged wave since.
+2. ~~**Reviewer reports without detours.**~~ -- done (#106, #115). The
+   reviewer writes its report into the `.pipeline-tmp/` of the checkout its
+   session works in (the root, or its own worktree; never `review-<N>`, the
+   pull request's tree), and reviewers run at the repository root.
+3. ~~**Retire `max_comment_only_reviews`.**~~ -- done (#105). Since #81 one
+   comment-only bot review hands the PR to the owner, so the limit could no
+   longer fire; it is gone from `Limits`, `config.json` and `docs/Pipeline.md`.
+4. ~~**One source for the machine's tool list.**~~ -- done (#107, #108, #116).
+   The list is named once: `MACHINE_TOOLS` and `GUARD_TOOLS` in `pipeline.py`,
+   the table in `docs/AgentEnvironment.md`, held together by tests; the other
+   docs point at the table.
 5. **GATE (human):** adopt the pipeline in a second repository with
    `docs/ADOPTING.md` — its own copy of the files, its own `setup-repo`,
    schedule and launcher; the pipeline is per repository, and `gh-reviewer`
@@ -52,9 +48,6 @@ showed missing is written down in `docs/LESSONS.md` and fixed.
    what went wrong silently.
 6. Fix what the verdict in step 5 names, one issue per finding, each with its
    lesson in `docs/LESSONS.md`.
-
-Steps 2–4 touch control paths (`.claude/`, `docs/Pipeline.md`): the planner
-files them, and the owner works them under `human-decision`.
 
 ## Decided
 
