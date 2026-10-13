@@ -255,7 +255,8 @@ template does not do that yet.
    on and that no pull request would show: a `.claude/settings.local.json`,
    uncommitted changes in the tick's checkout, a checkout not on the default
    branch, a missing tool (`docs/AgentEnvironment.md`
-   § *The machine that runs the pipeline*).
+   § *The machine that runs the pipeline*) -- but without gh or git the tick
+   does not get that far: `run` stops with an error first.
 2. Spawns one agent per dispatch item, in parallel, and waits for them.
 3. Reports: what was dispatched, what came back, and everything waiting on the
    owner.
