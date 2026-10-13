@@ -1892,7 +1892,8 @@ def preflight(root: Path = REPO_ROOT, run=subprocess.run, which=shutil.which,
         problems.append(".claude/settings.local.json exists: it can widen permissions or turn off "
                         "hooks for every tick and agent -- check it holds only what you meant "
                         "(docs/AgentEnvironment.md § Permissions)")
-    why = {"gh": "the tick cannot read or write GitHub",
+    why = {"gh": "the tick cannot read or write GitHub, and the allowlist guard lets every "
+                 "write through",
            "git": "the tick cannot sync its checkout, and agents cannot branch or push",
            "jq": "the allowlist guard and the bash guard cannot read their input"}
     for tool in MACHINE_TOOLS:

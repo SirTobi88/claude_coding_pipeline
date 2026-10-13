@@ -1280,6 +1280,9 @@ class PreflightTests(unittest.TestCase):
                                    bash=lambda: "/bin/bash")
         for tool in p.MACHINE_TOOLS:
             self.assertTrue(any(x.startswith(f"{tool} not on PATH") for x in problems), (tool, problems))
+        # jq keeps its own reason: without it the guards cannot read their input.
+        self.assertTrue(any(x.startswith("jq not on PATH: the allowlist guard and the bash guard "
+                                         "cannot read their input") for x in problems), problems)
 
     def test_missing_git_is_a_problem_not_a_crash(self):
         import tempfile
