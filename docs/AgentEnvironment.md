@@ -18,6 +18,7 @@ shell, or a binary name.**
 | Tool | Why | Check |
 |---|---|---|
 | `gh`, authenticated with the agents' token (`docs/Pipeline.md` § Setup, step 2) | every issue, PR and label operation | `gh auth status` names a `github_pat_…` token |
+| `git` | worktrees, branches, pushes, and the tick's fast-forward | `git --version` |
 | `jq` | both hooks read their payload with it | `jq --version` |
 | Python ≥ 3.9 | `.claude/bin/pipeline` | `.claude/bin/pipeline --help` |
 | bash | the hooks, the shims, the test entry point | on Windows, Git for Windows' Git Bash |

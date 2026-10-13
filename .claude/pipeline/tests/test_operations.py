@@ -5,6 +5,7 @@ log, the status issue, stats and doctor (docs/Pipeline.md § The tick).
 """
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -333,6 +334,24 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["tool: awk"][0], "fail")
         for tool in ("tr", "sed", "grep"):
             self.assertEqual(report[f"tool: {tool}"][0], "ok", tool)
+
+    def test_the_tool_table_names_every_tool_the_code_checks(self):
+        # docs/AgentEnvironment.md's table is the doc twin of MACHINE_TOOLS and
+        # GUARD_TOOLS (#107): a tool added to one is not silently missing there.
+        text = (p.REPO_ROOT / "docs" / "AgentEnvironment.md").read_text(encoding="utf-8")
+        section = text.split("## The machine that runs the pipeline", 1)[1].split("\n#", 1)[0]
+        named = set()
+        for line in section.splitlines():
+            if line.startswith("|"):
+                named.update(re.findall(r"`([^`]+)`", line.split("|")[1]))
+        for tool in p.MACHINE_TOOLS + p.GUARD_TOOLS:
+            self.assertIn(tool, named, tool)
+
+    def test_the_bash_guard_checks_exactly_the_guard_tools(self):
+        guard = (p.REPO_ROOT / ".claude" / "hooks" / "bash_guard.sh").read_text(encoding="utf-8")
+        loop = re.search(r"^for tool in ([^;]+); do", guard, re.M)
+        self.assertIsNotNone(loop, "the guard's startup loop")
+        self.assertEqual(set(loop.group(1).split()), set(p.GUARD_TOOLS))
 
 
 class ProtectionStateTests(unittest.TestCase):
