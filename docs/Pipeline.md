@@ -278,7 +278,6 @@ already running as well as those this tick starts:
 | `max_dispatch_per_tick` | 8 | agents one tick starts, all kinds together |
 | `max_fix_rounds`, `max_conflict_rounds` | 2, 2 | passes per PR before the owner |
 | `max_review_attempts` | 2 | reviews at one head that end without a verdict |
-| `max_comment_only_reviews` | 2 | comment-only reviews at one head |
 | `stale_in_progress_hours`, `stale_working_hours` | 6, 4 | when a claim counts as abandoned |
 | `stale_waiting_hours` | 12 | CI that never finishes; an approval that never merges |
 | `max_agent_runs_per_day` | 50 | agents all ticks start in 24 hours together, counted in the tick log; 0 turns it off |
