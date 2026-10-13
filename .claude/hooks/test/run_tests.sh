@@ -325,6 +325,23 @@ git -C "$REPO_REAL" checkout -q -b main-ish-2
 expect_eq "guard: ...even an unbound main tree"        2 "$(guard "$WT" "$REPO_REAL/CLAUDE.md")"
 expect_eq "guard: the main tree may write anywhere"    0 "$(guard "$REPO_REAL" "$REPO_REAL/CLAUDE.md")"
 git -C "$REPO_REAL" checkout -q agent/228-probe
+# Where a reviewer bound to a worktree may write its report (github-pr-review
+# § 9): its own worktree's .pipeline-tmp/, never the root's or review-<N>'s.
+EXCLUDE="$(git -C "$REPO_REAL" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "$(dirname "$EXCLUDE")"
+cp "$EXCLUDE" "$WORK/exclude.orig" 2>/dev/null || : > "$WORK/exclude.orig"
+printf '.pipeline-tmp/\n' >> "$EXCLUDE"
+RV="$REPO_REAL/.claude/worktrees/review-5"
+git -C "$REPO_REAL" worktree add -q --detach "$RV" 2>/dev/null
+# Without this the review-worktree line below passes even when the add failed:
+# a plain directory in the main checkout is refused for the same reason.
+rv_gitdir="$(git -C "$RV" rev-parse --git-dir 2>/dev/null)"
+expect_eq "guard: review-5 is its own checkout"        review-5 "${rv_gitdir##*/worktrees/}"
+expect_eq "guard: report in the session's own worktree" 0 "$(guard "$WT" "$WT/.pipeline-tmp/review-5.md")"
+expect_eq "guard: report not in the root's scratch"     2 "$(guard "$WT" "$REPO_REAL/.pipeline-tmp/review-5.md")"
+expect_eq "guard: report not in the review worktree"    2 "$(guard "$WT" "$RV/.pipeline-tmp/review-5.md")"
+git -C "$REPO_REAL" worktree remove --force "$RV" 2>/dev/null
+cp "$WORK/exclude.orig" "$EXCLUDE"
 git -C "$REPO_REAL" worktree remove --force "$WT" 2>/dev/null
 
 rm -f "$TMPDIR"/pipeline-scope-*

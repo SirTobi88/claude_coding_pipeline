@@ -240,7 +240,12 @@ APPROVE.
 
 ## 9. The verdict — one review, as the bot, pinned to the commit
 
-Write the report to `.pipeline-tmp/review-<N>.md` (gitignored scratch space). First line `**Verdict: <VERDICT>**`, then: what
+Write the report with the Write tool to `.pipeline-tmp/review-<N>.md` (gitignored)
+**in the checkout your session works in** — normally the repository root. A
+session bound to a worktree may not write into any other checkout, the root
+and `review-<N>` included: when the allowlist guard says `this session works in
+<path>`, write it to `<path>/.pipeline-tmp/review-<N>.md` instead. Never into
+`review-<N>`: that tree is the pull request's. First line `**Verdict: <VERDICT>**`, then: what
 you checked (§ 2–7, one line each), each finding with its route, what you fixed,
 follow-up issues filed.
 
@@ -262,6 +267,10 @@ the literal 40-character value, not a variable:
 .claude/bin/gh-reviewer api "repos/{owner}/{repo}/pulls/<N>/reviews" \
   -f commit_id=<sha> -f event=<EVENT> -F body=@.pipeline-tmp/review-<N>.md
 ```
+
+Always from the repository root, as the intro says. A report in your session's
+worktree is named by its path from the root:
+`-F body=@.claude/worktrees/<yours>/.pipeline-tmp/review-<N>.md`.
 
 | Verdict | `event` | Then |
 |---|---|---|

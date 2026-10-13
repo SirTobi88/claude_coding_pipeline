@@ -38,6 +38,9 @@ ALLOWED = [
      "-f", "event=REQUEST_CHANGES", "-F", "body=@.pipeline-tmp/review-105.md"],
     ["api", "repos/{owner}/{repo}/pulls/105/reviews",
      "-f", "commit_id=" + SHA, "-f", "event=COMMENT", "-F", "body=@.pipeline-tmp/review-105.md"],
+    ["api", "repos/{owner}/{repo}/pulls/105/reviews",
+     "-f", "commit_id=" + SHA, "-f", "event=APPROVE",
+     "-F", "body=@.claude/worktrees/agent-108-x/.pipeline-tmp/review-105.md"],
     ["pr", "merge", "105", "--auto", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "merge", "105", "--squash", "--delete-branch", "--match-head-commit", SHA],
     ["pr", "edit", "105", "--add-label", "status:needs-human"],
@@ -162,7 +165,8 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         # The review bodies the calls name: real regular files in the checkout,
         # since the wrapper resolves each one before gh may read it (#63).
         for body in ("x.md", ".pipeline-tmp/review-105.md",
-                     ".claude/worktrees/review-105/.pipeline-tmp/review-105.md"):
+                     ".claude/worktrees/review-105/.pipeline-tmp/review-105.md",
+                     ".claude/worktrees/agent-108-x/.pipeline-tmp/review-105.md"):
             path = cls.root / body
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("report " + body + "\n", encoding="utf-8")
@@ -305,6 +309,14 @@ class GhReviewerAllowlistTests(unittest.TestCase):
         self.assertEqual(from_sub, "report .claude/worktrees/review-105/.pipeline-tmp/review-105.md")
         from_root = self.seen(self.call(self.REVIEW))["body-content"]
         self.assertEqual(from_root, "report .pipeline-tmp/review-105.md")
+
+    def test_a_report_in_the_sessions_worktree_is_named_from_the_root(self):
+        # github-pr-review § 9: a reviewer whose session is bound to a worktree
+        # writes its report there and submits from the repository root, naming
+        # it by that path. The guard side is in .claude/hooks/test/run_tests.sh.
+        body = ".claude/worktrees/agent-108-x/.pipeline-tmp/review-105.md"
+        seen = self.seen(self.call(self.review(body)))
+        self.assertEqual(seen["body-content"], "report " + body)
 
     def test_gh_reads_a_private_copy_of_the_body(self):
         # #73: gh never opens the caller's path again, so a file swapped after
